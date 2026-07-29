@@ -12,37 +12,79 @@ OrtModel::OrtModel(const std::string &modelPath, int intraOpThreads)
 	opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 	session_ = Ort::Session(env_, modelPath.c_str(), opts);
 
-	if (session_.GetInputCount() != 1 || session_.GetOutputCount() != 1)
-		throw std::runtime_error(
-			"fx: expected single-input single-output model");
+	if (session_.GetInputCount() == 0 || session_.GetOutputCount() == 0)
+		throw std::runtime_error("fx: model with no inputs/outputs");
 
 	Ort::AllocatorWithDefaultOptions alloc;
-	auto inName = session_.GetInputNameAllocated(0, alloc);
-	auto outName = session_.GetOutputNameAllocated(0, alloc);
-	input_.name = inName.get();
-	output_.name = outName.get();
-	input_.shape = session_.GetInputTypeInfo(0)
-			       .GetTensorTypeAndShapeInfo()
-			       .GetShape();
-	output_.shape = session_.GetOutputTypeInfo(0)
-				.GetTensorTypeAndShapeInfo()
-				.GetShape();
+	for (size_t i = 0; i < session_.GetInputCount(); i++) {
+		auto name = session_.GetInputNameAllocated(i, alloc);
+		TensorDesc d;
+		d.name = name.get();
+		d.shape = session_.GetInputTypeInfo(i)
+				  .GetTensorTypeAndShapeInfo()
+				  .GetShape();
+		inputs_.push_back(std::move(d));
+	}
+	for (size_t i = 0; i < session_.GetOutputCount(); i++) {
+		auto name = session_.GetOutputNameAllocated(i, alloc);
+		TensorDesc d;
+		d.name = name.get();
+		d.shape = session_.GetOutputTypeInfo(i)
+				  .GetTensorTypeAndShapeInfo()
+				  .GetShape();
+		outputs_.push_back(std::move(d));
+	}
+}
+
+[[maybe_unused]] static size_t elementCount(const std::vector<int64_t> &shape)
+{
+	size_t n = 1;
+	for (int64_t d : shape)
+		n *= (d > 0) ? (size_t)d : 1;
+	return n;
+}
+
+std::vector<std::vector<float>>
+OrtModel::run(const std::vector<std::vector<float>> &inputData)
+{
+	if (inputData.size() != inputs_.size())
+		throw std::runtime_error("fx: input tensor count mismatch");
+
+	auto mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator,
+					      OrtMemTypeDefault);
+	std::vector<Ort::Value> inTensors;
+	std::vector<const char *> inNames;
+	inTensors.reserve(inputs_.size());
+	for (size_t i = 0; i < inputs_.size(); i++) {
+		inTensors.push_back(Ort::Value::CreateTensor<float>(
+			mem, const_cast<float *>(inputData[i].data()),
+			inputData[i].size(), inputs_[i].shape.data(),
+			inputs_[i].shape.size()));
+		inNames.push_back(inputs_[i].name.c_str());
+	}
+	std::vector<const char *> outNames;
+	outNames.reserve(outputs_.size());
+	for (const auto &o : outputs_)
+		outNames.push_back(o.name.c_str());
+
+	auto outs = session_.Run(Ort::RunOptions{nullptr}, inNames.data(),
+				 inTensors.data(), inTensors.size(),
+				 outNames.data(), outNames.size());
+
+	std::vector<std::vector<float>> result;
+	result.reserve(outs.size());
+	for (auto &o : outs) {
+		float *data = o.GetTensorMutableData<float>();
+		size_t count = o.GetTensorTypeAndShapeInfo().GetElementCount();
+		result.emplace_back(data, data + count);
+	}
+	return result;
 }
 
 std::vector<float> OrtModel::run(const std::vector<float> &inputData)
 {
-	auto mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator,
-					      OrtMemTypeDefault);
-	Ort::Value in = Ort::Value::CreateTensor<float>(
-		mem, const_cast<float *>(inputData.data()), inputData.size(),
-		input_.shape.data(), input_.shape.size());
-	const char *inNames[] = {input_.name.c_str()};
-	const char *outNames[] = {output_.name.c_str()};
-	auto outs = session_.Run(Ort::RunOptions{nullptr}, inNames, &in, 1,
-				 outNames, 1);
-	float *data = outs[0].GetTensorMutableData<float>();
-	size_t count = outs[0].GetTensorTypeAndShapeInfo().GetElementCount();
-	return std::vector<float>(data, data + count);
+	auto out = run(std::vector<std::vector<float>>{inputData});
+	return std::move(out.at(0));
 }
 
 } // namespace fx
