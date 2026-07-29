@@ -57,18 +57,33 @@ set_target_properties(onnxruntime PROPERTIES
   IMPORTED_LOCATION ${ORT_ROOT}/lib/libonnxruntime.so.${ORT_VERSION}
   INTERFACE_INCLUDE_DIRECTORIES ${ORT_ROOT}/include)
 
+# --- Bundled segmentation model: PP-HumanSeg v2 lite (Apache-2.0) ---
+set(FX_MODEL_DIR ${CMAKE_BINARY_DIR}/models)
+if(NOT EXISTS "${FX_MODEL_DIR}/pphumanseg_fp32.onnx")
+  file(DOWNLOAD
+    "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/pphumanseg_fp32.onnx"
+    ${FX_MODEL_DIR}/pphumanseg_fp32.onnx
+    EXPECTED_HASH SHA256=6913acd125be55fd08e76072ed464146925223392954c437f3aa700e4da84b17)
+  file(DOWNLOAD
+    "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/pphumanseg_fp32.onnx.license"
+    ${FX_MODEL_DIR}/pphumanseg_fp32.onnx.license
+    EXPECTED_HASH SHA256=363552428d64011b9242e0889f90e06cf2c30370908a2a9641dbdd8d37a5f2a6)
+endif()
+
 find_package(Threads REQUIRED)
 
 # --- libfx: OBS-free core library (all inference code lives here from Plan 2) ---
 add_library(fx STATIC
   src/fx/version.cpp
   src/fx/engine/ort_backend.cpp
+  src/fx/models/pp_humanseg.cpp
 )
 target_include_directories(fx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(fx PUBLIC cxx_std_17)
 set_target_properties(fx PROPERTIES POSITION_INDEPENDENT_CODE ON
                                     BUILD_RPATH ${ORT_ROOT}/lib)
 target_link_libraries(fx PUBLIC onnxruntime Threads::Threads)
+target_compile_definitions(fx PUBLIC FX_MODEL_PATH="${FX_MODEL_DIR}/pphumanseg_fp32.onnx")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE fx)
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
   BUILD_RPATH "${ORT_ROOT}/lib;\$ORIGIN"
@@ -90,6 +105,7 @@ if(BUILD_TESTING)
   add_executable(fx_tests
     tests/test_version.cpp
     tests/test_ort_backend.cpp
+    tests/test_pp_humanseg.cpp
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
   set_target_properties(fx_tests PROPERTIES BUILD_RPATH ${ORT_ROOT}/lib)
