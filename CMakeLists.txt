@@ -78,6 +78,7 @@ add_library(fx STATIC
   src/fx/engine/ort_backend.cpp
   src/fx/image/ops.cpp
   src/fx/models/pp_humanseg.cpp
+  src/fx/models_dl/downloader.cpp
   src/fx/pipeline/segmentation_pipeline.cpp
   src/fx/worker.cpp
 )
@@ -113,6 +114,7 @@ if(BUILD_TESTING)
     tests/test_worker.cpp
     tests/test_golden.cpp
     tests/test_soak.cpp
+    tests/test_downloader.cpp
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
   target_compile_features(fx_tests PRIVATE cxx_std_20)
