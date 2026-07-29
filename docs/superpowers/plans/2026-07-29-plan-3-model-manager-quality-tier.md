@@ -677,7 +677,7 @@ void Downloader::run(DownloadRequest req)
 } // namespace fx::models_dl
 ```
 
-- [ ] **Step 5: Build + test — 17/17 pass**
+- [ ] **Step 5: Build + test — 20/20 pass**
 
 ```bash
 cmake --build --preset ubuntu-x86_64 && ctest --test-dir build_x86_64 --output-on-failure
