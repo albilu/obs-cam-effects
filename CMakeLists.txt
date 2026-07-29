@@ -95,8 +95,3 @@ if(BUILD_TESTING)
   set_target_properties(fx_tests PROPERTIES BUILD_RPATH ${ORT_ROOT}/lib)
   gtest_discover_tests(fx_tests)
 endif()
-
-# TEMP-DEBUG
-get_target_property(_dbg_rpath ${CMAKE_PROJECT_NAME} BUILD_RPATH)
-get_target_property(_dbg_irpath ${CMAKE_PROJECT_NAME} INSTALL_RPATH)
-message(STATUS "DEBUG BUILD_RPATH='${_dbg_rpath}' INSTALL_RPATH='${_dbg_irpath}'")
