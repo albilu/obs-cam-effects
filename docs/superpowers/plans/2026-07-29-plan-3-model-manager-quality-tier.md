@@ -368,16 +368,18 @@ bool waitDone(Downloader &d, int ms)
 
 TEST(Downloader, DownloadsAndVerifiesFileUrl)
 {
+	std::system("mkdir -p /tmp/opencode");
 	std::string src = writeFixture(tmpPath("src.bin"), "hello fx downloader\n");
 	std::string dst = tmpPath("dst.bin");
 	std::remove(dst.c_str());
+	std::remove((dst + ".part").c_str());
 
 	Downloader d;
 	fx::models_dl::DownloadRequest req;
 	req.url = "file://" + src;
 	req.destPath = dst;
 	req.sha256 = sha256Of(src);
-	req.expectedSize = 19;
+	req.expectedSize = 20;
 	d.start(req);
 
 	ASSERT_TRUE(waitDone(d, 10000));
@@ -390,9 +392,11 @@ TEST(Downloader, DownloadsAndVerifiesFileUrl)
 
 TEST(Downloader, HashMismatchIsError)
 {
+	std::system("mkdir -p /tmp/opencode");
 	std::string src = writeFixture(tmpPath("src2.bin"), "bad hash test\n");
 	std::string dst = tmpPath("dst2.bin");
 	std::remove(dst.c_str());
+	std::remove((dst + ".part").c_str());
 
 	Downloader d;
 	fx::models_dl::DownloadRequest req;
@@ -405,10 +409,13 @@ TEST(Downloader, HashMismatchIsError)
 	ASSERT_TRUE(waitDone(d, 10000));
 	ASSERT_EQ(d.state(), State::Error);
 	ASSERT_FALSE(d.error().empty());
+	std::ifstream part(dst + ".part");
+	ASSERT_FALSE(part.is_open());
 }
 
 TEST(Downloader, ExtractsTgzMembers)
 {
+	std::system("mkdir -p /tmp/opencode");
 	/* Build a tiny tgz fixture: root/pkg/file.txt = "payload". */
 	std::string root = tmpPath("tgzsrc");
 	std::string mk = "mkdir -p " + root + "/pkg && printf payload > " +
@@ -417,6 +424,7 @@ TEST(Downloader, ExtractsTgzMembers)
 	ASSERT_EQ(std::system(mk.c_str()), 0);
 	std::string dst = tmpPath("f2.tgz");
 	std::remove(dst.c_str());
+	std::remove((dst + ".part").c_str());
 	std::string outDir = tmpPath("tgzout");
 	std::string mkOut = "mkdir -p " + outDir;
 	ASSERT_EQ(std::system(mkOut.c_str()), 0);
