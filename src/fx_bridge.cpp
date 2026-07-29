@@ -23,8 +23,8 @@ cam_fx_t *cam_fx_create(const char *model_path, int threads)
 		fx->pipeline = std::make_unique<fx::SegmentationPipeline>(
 			model_path, threads);
 		fx->worker = std::make_unique<fx::Worker>(
-			[&](const fx::Frame &f) {
-				return fx->pipeline->process(f);
+			[pipeline = fx->pipeline.get()](const fx::Frame &f) {
+				return pipeline->process(f);
 			});
 		fx->worker->start();
 		return fx.release();

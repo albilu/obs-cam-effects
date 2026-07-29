@@ -14,6 +14,29 @@
 #define STAGE_SIZE 192
 #define MASK_STALE_MS 1000
 
+#include <stdatomic.h>
+
+enum cam_mode { MODE_OFF, MODE_TRANSPARENT, MODE_IMAGE, MODE_BLUR };
+enum cam_failure { FAILURE_PASSTHROUGH, FAILURE_FREEZE };
+
+static int parse_mode(const char *s)
+{
+	if (strcmp(s, "transparent") == 0)
+		return MODE_TRANSPARENT;
+	if (strcmp(s, "image") == 0)
+		return MODE_IMAGE;
+	if (strcmp(s, "blur") == 0)
+		return MODE_BLUR;
+	return MODE_OFF;
+}
+
+static int parse_failure(const char *s)
+{
+	if (strcmp(s, "freeze") == 0)
+		return FAILURE_FREEZE;
+	return FAILURE_PASSTHROUGH;
+}
+
 struct cam_effects_filter {
 	obs_source_t *source;
 
@@ -26,8 +49,8 @@ struct cam_effects_filter {
 	cam_fx_t *fx;
 	uint64_t mask_seq;
 
-	char *mode;         /* off | transparent | image | blur */
-	char *failure_mode; /* passthrough | freeze */
+	atomic_int mode_id;    /* enum cam_mode */
+	atomic_int failure_id; /* enum cam_failure */
 	int blur_strength;
 	char *image_path;
 	gs_image_file_t bg_image;
@@ -94,8 +117,6 @@ static void cam_effects_destroy(void *data)
 	if (filter->fx)
 		cam_fx_destroy(filter->fx);
 	cam_effects_destroy_graphics(filter);
-	bfree(filter->mode);
-	bfree(filter->failure_mode);
 	bfree(filter->image_path);
 	bfree(filter);
 }
@@ -104,35 +125,52 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 {
 	struct cam_effects_filter *filter = data;
 
-	bfree(filter->mode);
-	bfree(filter->failure_mode);
+	char *mode = bstrdup(obs_data_get_string(settings, SETTING_MODE));
+	char *failure = bstrdup(obs_data_get_string(settings, SETTING_FAILURE));
+	atomic_store_explicit(&filter->mode_id, parse_mode(mode),
+			      memory_order_relaxed);
+	atomic_store_explicit(&filter->failure_id, parse_failure(failure),
+			      memory_order_relaxed);
+	bfree(mode);
+	bfree(failure);
+
 	bfree(filter->image_path);
-	filter->mode = bstrdup(obs_data_get_string(settings, SETTING_MODE));
-	filter->failure_mode =
-		bstrdup(obs_data_get_string(settings, SETTING_FAILURE));
 	filter->image_path =
 		bstrdup(obs_data_get_string(settings, SETTING_IMAGE_PATH));
 	filter->blur_strength =
 		(int)obs_data_get_int(settings, SETTING_BLUR_STRENGTH);
 
-	/* (Re)load the background image if the path changed and mode
-	 * needs it. */
+	/* Free any previous background image (destroys its texture, so
+	 * inside the graphics lock). */
 	obs_enter_graphics();
 	gs_image_file_free(&filter->bg_image);
 	filter->bg_loaded = false;
-	if (strcmp(filter->mode, "image") == 0 &&
-	    filter->image_path[0] != '\0') {
-		gs_image_file_init(&filter->bg_image, filter->image_path);
-		gs_image_file_init_texture(&filter->bg_image);
-		filter->bg_loaded = filter->bg_image.texture != NULL;
-	}
 	obs_leave_graphics();
 
-	/* Create the inference engine lazily on first non-off mode. */
-	if (!filter->fx && strcmp(filter->mode, "off") != 0) {
+	/* (Re)load the background image if the path changed and mode
+	 * needs it. Decode (disk I/O) outside the graphics lock; only
+	 * the texture upload runs inside. */
+	if (atomic_load_explicit(&filter->mode_id, memory_order_relaxed) ==
+		    MODE_IMAGE &&
+	    filter->image_path[0] != '\0') {
+		gs_image_file_init(&filter->bg_image, filter->image_path);
+		obs_enter_graphics();
+		gs_image_file_init_texture(&filter->bg_image);
+		filter->bg_loaded = filter->bg_image.texture != NULL;
+		obs_leave_graphics();
+	}
+
+	/* Create the inference engine lazily on first non-off mode.
+	 * The graphics lock synchronizes the publication of filter->fx
+	 * with the render thread. */
+	if (!filter->fx &&
+	    atomic_load_explicit(&filter->mode_id, memory_order_relaxed) !=
+		    MODE_OFF) {
 		char *model = obs_module_file("models/pphumanseg_fp32.onnx");
+		obs_enter_graphics();
 		if (model)
 			filter->fx = cam_fx_create(model, 2);
+		obs_leave_graphics();
 		bfree(model);
 	}
 }
@@ -198,7 +236,14 @@ static void cam_effects_stage(struct cam_effects_filter *filter,
 	gs_matrix_push();
 	gs_matrix_scale3f((float)STAGE_SIZE / (float)tw,
 			  (float)STAGE_SIZE / (float)th, 1.0f);
-	obs_source_video_render(target);
+	/* The target always has filters (ours), so obs_source_main_render
+	 * skips obs_source_default_render and sources without their own
+	 * effect loop (e.g. image sources) would draw with whatever
+	 * effect is current — none here. Provide the default effect's
+	 * Draw pass around the target render, like default_render. */
+	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	while (gs_effect_loop(def, "Draw"))
+		obs_source_video_render(target);
 	gs_matrix_pop();
 	gs_blend_state_pop();
 	gs_texrender_end(filter->stage_render);
@@ -232,19 +277,30 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 {
 	UNUSED_PARAMETER(effect);
 	struct cam_effects_filter *filter = data;
+	int mode = atomic_load_explicit(&filter->mode_id, memory_order_relaxed);
+	bool freeze = atomic_load_explicit(&filter->failure_id,
+					   memory_order_relaxed) ==
+		      FAILURE_FREEZE;
+
 	obs_source_t *target = obs_filter_get_target(filter->source);
+	uint32_t w = target ? obs_source_get_base_width(target) : 0;
+	uint32_t h = target ? obs_source_get_base_height(target) : 0;
+
 	if (!target || !filter->effect) {
+		/* No target, or the effect failed to load: honor the
+		 * failure mode. Freeze shows the last composite (black
+		 * before the first), passthrough shows the raw feed. */
+		if (freeze && mode != MODE_OFF) {
+			cam_effects_draw_out(filter, w ? w : 1920,
+					     h ? h : 1080);
+			return;
+		}
 		obs_source_skip_video_filter(filter->source);
 		return;
 	}
 
-	bool mode_off = strcmp(filter->mode, "off") == 0;
-	bool freeze = strcmp(filter->failure_mode, "freeze") == 0;
-
-	uint32_t w = obs_source_get_base_width(target);
-	uint32_t h = obs_source_get_base_height(target);
-	if (mode_off || w == 0 || h == 0 || !filter->fx) {
-		if (freeze && !mode_off) {
+	if (mode == MODE_OFF || w == 0 || h == 0 || !filter->fx) {
+		if (freeze && mode != MODE_OFF) {
 			cam_effects_draw_out(filter, w ? w : 1920,
 					     h ? h : 1080);
 			return;
@@ -282,16 +338,27 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	}
 
 	/* Upload mask and composite into out_render. */
-	gs_texture_set_image(filter->mask_tex, mask, (uint32_t)mw, false);
+	if (mw == STAGE_SIZE && mh == STAGE_SIZE)
+		gs_texture_set_image(filter->mask_tex, mask, (uint32_t)mw,
+				     false);
 
 	const char *tech = "DrawTransparent";
-	if (strcmp(filter->mode, "image") == 0 && filter->bg_loaded)
+	if (mode == MODE_IMAGE && filter->bg_loaded)
 		tech = "DrawReplace";
-	else if (strcmp(filter->mode, "blur") == 0)
+	else if (mode == MODE_BLUR)
 		tech = "DrawTransparent"; /* blur arrives in Task 8 */
 
 	gs_texrender_reset(filter->out_render);
 	if (gs_texrender_begin(filter->out_render, w, h)) {
+		/* texrender keeps the caller's projection: set our own
+		 * ortho + replace-blend + clear, like the staging path,
+		 * so the composite fills the target exactly. */
+		struct vec4 clear;
+		vec4_zero(&clear);
+		gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+		gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
+		gs_blend_state_push();
+		gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
 		if (obs_source_process_filter_begin(filter->source, GS_BGRA,
 						    OBS_NO_DIRECT_RENDERING)) {
 			gs_effect_set_texture(
@@ -307,6 +374,7 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 							   filter->effect, w,
 							   h, tech);
 		}
+		gs_blend_state_pop();
 		gs_texrender_end(filter->out_render);
 	}
 	cam_effects_draw_out(filter, w, h);
