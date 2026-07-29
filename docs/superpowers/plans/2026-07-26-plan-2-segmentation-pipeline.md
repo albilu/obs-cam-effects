@@ -899,6 +899,26 @@ TEST(Worker, StopIsIdempotent)
 	SUCCEED();
 }
 
+TEST(Worker, ProcessorThrowDoesNotCrash)
+{
+	std::atomic<int> calls{0};
+	auto throwing = [&](const fx::Frame &) -> std::shared_ptr<fx::Mask> {
+		calls.fetch_add(1);
+		throw std::runtime_error("inference failed");
+	};
+	fx::Worker w(throwing);
+	w.start();
+	w.submit(makeFrame(1));
+	std::this_thread::sleep_for(50ms);
+	uint64_t seq = 42;
+	auto m = w.tryGetLatest(seq); // nothing published
+	EXPECT_EQ(seq, 0u);
+	EXPECT_FALSE(w.isFresh(1000));
+	w.stop();
+	EXPECT_GE(calls.load(), 1);
+	SUCCEED(); // reaching here means no std::terminate
+}
+
 TEST(SegmentationPipeline, EndToEndWithRealModel)
 {
 	fx::SegmentationPipeline pipe(FX_MODEL_PATH, 1);
@@ -1052,7 +1072,7 @@ NOTE: `#include <latch>` in the test requires C++20. GoogleTest 1.15 + GCC 15 su
 cmake --build --preset ubuntu-x86_64 && ctest --test-dir build_x86_64 --output-on-failure
 ```
 
-Expected: 11/11 pass.
+Expected: 12/12 pass.
 
 - [ ] **Step 7: Commit**
 
@@ -1660,7 +1680,7 @@ Expected: `plugin loaded successfully`; NO `Failed to load effect` / `gs_effect_
 ctest --test-dir build_x86_64 --output-on-failure
 ```
 
-Expected: 11/11 pass.
+Expected: 12/12 pass.
 
 - [ ] **Step 9: Commit**
 
