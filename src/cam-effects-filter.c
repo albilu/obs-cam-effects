@@ -50,7 +50,6 @@ struct cam_effects_filter {
 	gs_effect_t *blur_effect;       /* kawase_blur.effect */
 
 	cam_fx_t *fx;
-	uint64_t mask_seq;
 
 	atomic_int mode_id;    /* enum cam_mode */
 	atomic_int failure_id; /* enum cam_failure */
@@ -423,10 +422,10 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 		tech = "DrawReplace";
 
 	/* Blur must run before out_render begins (it renders the target
-	 * into its own texrenders). Fall back to transparent if it
-	 * fails. */
+	 * into its own texrenders). Fall back to transparent if the
+	 * kawase effect failed to load or the blur pass fails. */
 	gs_texture_t *blur = NULL;
-	if (mode == MODE_BLUR) {
+	if (mode == MODE_BLUR && filter->blur_effect) {
 		blur = cam_effects_blur(filter, target, w, h);
 		if (blur)
 			tech = "DrawBlur";

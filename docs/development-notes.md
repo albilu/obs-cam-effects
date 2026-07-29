@@ -60,3 +60,18 @@ merge against this base.
     thread (benign on x86_64: worst case one stale frame).
   - Golden constants tied to ORT 1.28.0 + pinned model + this CPU arch;
     re-record on bumps.
+  - Follow-ups for Plan 3+:
+    - Status property row is never written; worker exception-skip does not
+      log (spec: "catch + log"); spec's "30 consecutive failures -> disable"
+      was replaced by 1s staleness fallback (undeclared spec deviation).
+    - Background image is re-decoded from disk on every settings update
+      (no path-change detection) — UI jank in image mode.
+    - obs_source_process_filter_begin failure draws black for one frame
+      instead of passthrough.
+    - Kawase pass loop lacks ONE/ZERO blend setup (identity for opaque
+      frames; slightly darkens semi-transparent sources).
+    - Freeze-before-first-frame outputs transparency, not spec-literal
+      black (privacy intent satisfied).
+    - get_name hardcodes "Camera Effects"; locale Name= key unused.
+    - mask_tex is hard-coded 192x192 and would silently keep a stale mask
+      if a future model's mask size differs — revisit with RVM tier.
