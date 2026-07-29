@@ -78,6 +78,8 @@ add_library(fx STATIC
   src/fx/engine/ort_backend.cpp
   src/fx/image/ops.cpp
   src/fx/models/pp_humanseg.cpp
+  src/fx/pipeline/segmentation_pipeline.cpp
+  src/fx/worker.cpp
 )
 target_include_directories(fx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(fx PUBLIC cxx_std_17)
@@ -108,8 +110,10 @@ if(BUILD_TESTING)
     tests/test_ort_backend.cpp
     tests/test_image_ops.cpp
     tests/test_pp_humanseg.cpp
+    tests/test_worker.cpp
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
+  target_compile_features(fx_tests PRIVATE cxx_std_20)
   set_target_properties(fx_tests PROPERTIES BUILD_RPATH ${ORT_ROOT}/lib)
   gtest_discover_tests(fx_tests)
 endif()
