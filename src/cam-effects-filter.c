@@ -45,6 +45,9 @@ struct cam_effects_filter {
 	gs_texrender_t *out_render;     /* frame-size composite + freeze */
 	gs_texture_t *mask_tex;         /* STAGE_SIZE x STAGE_SIZE R8 */
 	gs_effect_t *effect;            /* mask_composite.effect */
+	gs_texrender_t *blur_a;         /* half-res ping */
+	gs_texrender_t *blur_b;         /* half-res pong */
+	gs_effect_t *blur_effect;       /* kawase_blur.effect */
 
 	cam_fx_t *fx;
 	uint64_t mask_seq;
@@ -72,8 +75,11 @@ static void cam_effects_destroy_graphics(struct cam_effects_filter *filter)
 	gs_texrender_destroy(filter->stage_render);
 	gs_stagesurface_destroy(filter->stage_surface);
 	gs_texrender_destroy(filter->out_render);
+	gs_texrender_destroy(filter->blur_a);
+	gs_texrender_destroy(filter->blur_b);
 	gs_texture_destroy(filter->mask_tex);
 	gs_effect_destroy(filter->effect);
+	gs_effect_destroy(filter->blur_effect);
 	gs_image_file_free(&filter->bg_image);
 	obs_leave_graphics();
 }
@@ -86,6 +92,14 @@ static void cam_effects_load_effect(struct cam_effects_filter *filter)
 		filter->effect = gs_effect_create_from_file(path, NULL);
 	obs_leave_graphics();
 	bfree(path);
+
+	char *blur_path = obs_module_file("effects/kawase_blur.effect");
+	obs_enter_graphics();
+	if (blur_path)
+		filter->blur_effect =
+			gs_effect_create_from_file(blur_path, NULL);
+	obs_leave_graphics();
+	bfree(blur_path);
 
 	obs_enter_graphics();
 	filter->mask_tex = gs_texture_create(STAGE_SIZE, STAGE_SIZE, GS_R8, 1,
@@ -104,6 +118,8 @@ static void *cam_effects_create(obs_data_t *settings, obs_source_t *source)
 	filter->stage_surface =
 		gs_stagesurface_create(STAGE_SIZE, STAGE_SIZE, GS_BGRA);
 	filter->out_render = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+	filter->blur_a = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+	filter->blur_b = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
 	obs_leave_graphics();
 
 	cam_effects_load_effect(filter);
@@ -273,6 +289,66 @@ static void cam_effects_draw_out(struct cam_effects_filter *filter,
 		gs_draw_sprite(tex, 0, w, h);
 }
 
+/* Runs `passes` Kawase blur iterations on target at half resolution.
+ * Returns the texture containing the blurred result, or NULL. */
+static gs_texture_t *cam_effects_blur(struct cam_effects_filter *filter,
+				      obs_source_t *target, uint32_t w,
+				      uint32_t h)
+{
+	uint32_t bw = w / 2 > 0 ? w / 2 : 1;
+	uint32_t bh = h / 2 > 0 ? h / 2 : 1;
+
+	/* Downsample target into blur_a using the default effect. */
+	gs_texrender_reset(filter->blur_a);
+	if (!gs_texrender_begin(filter->blur_a, bw, bh))
+		return NULL;
+	struct vec4 clear;
+	vec4_zero(&clear);
+	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+	gs_ortho(0.0f, (float)bw, 0.0f, (float)bh, -100.0f, 100.0f);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+	gs_matrix_push();
+	gs_matrix_scale3f((float)bw / (float)w, (float)bh / (float)h, 1.0f);
+	/* Like the staging path: sources without their own effect loop
+	 * (e.g. image sources) need the default effect active. */
+	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	while (gs_effect_loop(def, "Draw"))
+		obs_source_video_render(target);
+	gs_matrix_pop();
+	gs_blend_state_pop();
+	gs_texrender_end(filter->blur_a);
+
+	gs_texture_t *src = gs_texrender_get_texture(filter->blur_a);
+	for (int i = 0; i < filter->blur_strength; i++) {
+		gs_texrender_t *dst = (i % 2 == 0) ? filter->blur_b
+						   : filter->blur_a;
+		gs_texrender_reset(dst);
+		if (!gs_texrender_begin(dst, bw, bh))
+			return src;
+		gs_effect_set_texture(
+			gs_effect_get_param_by_name(filter->blur_effect,
+						    "image"),
+			src);
+		struct vec2 texel = {1.0f / (float)bw, 1.0f / (float)bh};
+		gs_effect_set_vec2(
+			gs_effect_get_param_by_name(filter->blur_effect,
+						    "texel"),
+			&texel);
+		gs_effect_set_float(
+			gs_effect_get_param_by_name(filter->blur_effect,
+						    "iteration"),
+			(float)i);
+		gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+		gs_ortho(0.0f, (float)bw, 0.0f, (float)bh, -100.0f, 100.0f);
+		while (gs_effect_loop(filter->blur_effect, "Draw"))
+			gs_draw_sprite(src, 0, bw, bh);
+		gs_texrender_end(dst);
+		src = gs_texrender_get_texture(dst);
+	}
+	return src;
+}
+
 static void cam_effects_video_render(void *data, gs_effect_t *effect)
 {
 	UNUSED_PARAMETER(effect);
@@ -345,8 +421,16 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	const char *tech = "DrawTransparent";
 	if (mode == MODE_IMAGE && filter->bg_loaded)
 		tech = "DrawReplace";
-	else if (mode == MODE_BLUR)
-		tech = "DrawTransparent"; /* blur arrives in Task 8 */
+
+	/* Blur must run before out_render begins (it renders the target
+	 * into its own texrenders). Fall back to transparent if it
+	 * fails. */
+	gs_texture_t *blur = NULL;
+	if (mode == MODE_BLUR) {
+		blur = cam_effects_blur(filter, target, w, h);
+		if (blur)
+			tech = "DrawBlur";
+	}
 
 	gs_texrender_reset(filter->out_render);
 	if (gs_texrender_begin(filter->out_render, w, h)) {
@@ -370,6 +454,11 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 					gs_effect_get_param_by_name(
 						filter->effect, "bg_image"),
 					filter->bg_image.texture);
+			if (blur)
+				gs_effect_set_texture(
+					gs_effect_get_param_by_name(
+						filter->effect, "blur_image"),
+					blur);
 			obs_source_process_filter_tech_end(filter->source,
 							   filter->effect, w,
 							   h, tech);

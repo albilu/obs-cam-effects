@@ -1,0 +1,42 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float2 texel;
+uniform float iteration;
+
+sampler_state def_sampler {
+	Filter = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv : TEXCOORD0;
+};
+
+VertData mainTransform(VertData v_in)
+{
+	VertData v_out;
+	v_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	v_out.uv = v_in.uv;
+	return v_out;
+}
+
+float4 Kawase(VertData v_in) : TARGET
+{
+	float2 o = texel * (iteration + 0.5);
+	float4 c = image.Sample(def_sampler, v_in.uv + float2(-o.x, -o.y)) +
+		   image.Sample(def_sampler, v_in.uv + float2(o.x, -o.y)) +
+		   image.Sample(def_sampler, v_in.uv + float2(-o.x, o.y)) +
+		   image.Sample(def_sampler, v_in.uv + float2(o.x, o.y));
+	return c * 0.25;
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = mainTransform(v_in);
+		pixel_shader = Kawase(v_in);
+	}
+}
