@@ -19,7 +19,7 @@ Effects are combinable within one filter instance and run in real time (≥30fps
 
 ### Goals
 - Single combined "Camera Effects" filter with per-effect toggles
-- ≥30fps at 720p on a modern CPU without discrete GPU (segmentation effects)
+- ≥30fps at 720p on a modern CPU without discrete GPU (segmentation effects) — **a floor, not a cap**: inference runs at fixed 192×192 regardless of output resolution, so 1080p60 and 4K segmentation are realistic (measured ~140fps sustained on a 2025 desktop CPU); higher output res costs only GPU compositing
 - ≥30fps at 720p for face swap when a usable GPU execution provider exists; on CPU-only machines the face-swap toggle is shown as unavailable (CPU swap is 200–400ms/frame — not viable)
 - One simple install path on Linux: `.deb` package + Flatpak (Flatpak OBS cannot see system plugins)
 - Offline-capable out of the box for bundled (permissively licensed) models
@@ -81,6 +81,7 @@ Hybrid quality technique: infer mask at model-native resolution (192×192 for th
 | 6 | Failure mode | User-selectable: passthrough (default) or freeze-last-frame | Privacy: passthrough would expose identities the filter exists to hide |
 | 7 | Platform scope (amendment) | Linux only; Windows/macOS dropped | User decision 2026-07-26: eliminates Win/mac packaging, signing/notarization, and DirectML/CoreML provider work |
 | 8 | Replace modes (amendment) | Background replace supports two modes: transparent alpha, or image | User decision 2026-07-26: transparency lets scene sources below show through (the obs-backgroundremoval compositing pattern) |
+| 9 | Settings surface (amendment) | Adopt 8 tweakable settings inspired by obs-backgroundremoval (threshold, contour filter, feather, temporal smoothing) and Deep-Live-Cam (swap intensity, sharpness, preserve-mouth, status fps); their mask-every-X knob superseded by our automatic drop policy; perf targets clarified as floors | User decision 2026-07-26 after reviewing both apps' settings UIs |
 
 ## 5. Architecture
 
@@ -121,12 +122,14 @@ Six modules, one job each:
 
 ### 5.2 Settings (per filter instance)
 
-- Effect toggles: Background blur (strength), Background replace (**mode: transparent | image**; image path when mode=image), Face swap (source face image)
-- Model tier: Auto / Lite / Standard / Quality
+- Background mode: **Off / Transparent / Replace with image / Blur** (single selector as implemented in Plan 2; combinable toggles deferred) + image path (replace mode) + blur strength (1–4)
+- Face swap: enable + source face image; **swap intensity** (0–100% opacity), **sharpness** (unsharp mask on face ROI), **preserve mouth region** toggle (v1: geometric lower-face region, no extra model; landmark-based refinement later)
+- Model tier: **user-selectable dropdown** — Auto (default) / Lite / Standard / Quality. Auto picks per §7.1; a manual choice overrides it, so users can experiment (force Lite on weak hardware, force Quality to compare edge quality)
+- Advanced mask tuning: **threshold** (binarize cutoff, 0 = off/soft mask), **contour filter** (drop disconnected mask blobs < % of frame, 0 = off), **feather** (edge softening), **temporal smoothing** (EMA factor, default 0.6)
 - On processing failure: **Show camera feed (default)** / **Freeze last processed frame**
 - AI disclosure watermark: ON by default (visible when face swap active; see §9)
 - Performance: inference threads (default 2), advanced debug logging toggle
-- Status line: current state (active / downloading / degraded / error reason)
+- Status line: current state (active / downloading / degraded / error reason) **+ measured processing fps**
 
 ## 6. Data flow & threading
 
@@ -173,7 +176,7 @@ Invariants:
 | Standard (default) | PP-HumanSeg v2-Lite | yes | not offered |
 | Quality | RVM MobileNetV3 | runtime download (GPL-3.0 terms shown) | YuNet (bundled, Apache) + inswapper_128 fp32 (runtime download, non-commercial terms shown) |
 
-Auto = Standard on CPU-only machines; Quality when a usable GPU EP is detected and the required models are downloaded.
+Auto = Standard on CPU-only machines; Quality when a usable GPU EP is detected and the required models are downloaded. The picker is user-visible (§5.2): Auto is the default, but the user can force any tier manually.
 
 ### 7.2 Execution provider strategy (ORT v1.28, runtime probe; Linux-only)
 
