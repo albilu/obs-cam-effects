@@ -45,7 +45,8 @@ OrtModel::OrtModel(const std::string &modelPath, int intraOpThreads)
 }
 
 std::vector<std::vector<float>>
-OrtModel::run(const std::vector<std::vector<float>> &inputData)
+OrtModel::runImpl(const std::vector<std::vector<float>> &inputData,
+		  const std::vector<std::vector<int64_t>> *overrides)
 {
 	if (inputData.size() != inputs_.size())
 		throw std::runtime_error("fx: input tensor count mismatch");
@@ -56,10 +57,12 @@ OrtModel::run(const std::vector<std::vector<float>> &inputData)
 	std::vector<const char *> inNames;
 	inTensors.reserve(inputs_.size());
 	for (size_t i = 0; i < inputs_.size(); i++) {
+		const std::vector<int64_t> &shape =
+			(overrides && !(*overrides)[i].empty()) ? (*overrides)[i]
+							      : inputs_[i].shape;
 		inTensors.push_back(Ort::Value::CreateTensor<float>(
 			mem, const_cast<float *>(inputData[i].data()),
-			inputData[i].size(), inputs_[i].shape.data(),
-			inputs_[i].shape.size()));
+			inputData[i].size(), shape.data(), shape.size()));
 		inNames.push_back(inputs_[i].name.c_str());
 	}
 	std::vector<const char *> outNames;
@@ -79,6 +82,21 @@ OrtModel::run(const std::vector<std::vector<float>> &inputData)
 		result.emplace_back(data, data + count);
 	}
 	return result;
+}
+
+std::vector<std::vector<float>>
+OrtModel::run(const std::vector<std::vector<float>> &inputData)
+{
+	return runImpl(inputData, nullptr);
+}
+
+std::vector<std::vector<float>> OrtModel::runWithShapes(
+	const std::vector<std::vector<float>> &inputData,
+	const std::vector<std::vector<int64_t>> &overrides)
+{
+	if (overrides.size() != inputs_.size())
+		throw std::runtime_error("fx: shape override count mismatch");
+	return runImpl(inputData, &overrides);
 }
 
 std::vector<float> OrtModel::run(const std::vector<float> &inputData)

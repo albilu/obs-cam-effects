@@ -36,7 +36,17 @@ public:
 	std::vector<std::vector<float>>
 	run(const std::vector<std::vector<float>> &inputData);
 
+	/* Multi-IO run with per-input shape override (for models with
+	 * dynamic dims like RVM's src input). overrides[i] empty = keep
+	 * declared shape. */
+	std::vector<std::vector<float>>
+	runWithShapes(const std::vector<std::vector<float>> &inputData,
+		      const std::vector<std::vector<int64_t>> &overrides);
+
 private:
+	std::vector<std::vector<float>>
+	runImpl(const std::vector<std::vector<float>> &inputData,
+		const std::vector<std::vector<int64_t>> *overrides);
 	Ort::Env env_;
 	Ort::Session session_;
 	std::vector<TensorDesc> inputs_;

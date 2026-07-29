@@ -90,6 +90,7 @@ add_library(fx STATIC
   src/fx/image/ops.cpp
   src/fx/models/pp_humanseg.cpp
   src/fx/models/mediapipe_lite.cpp
+  src/fx/models/rvm.cpp
   src/fx/models_dl/downloader.cpp
   src/fx/pipeline/segmentation_pipeline.cpp
   src/fx/worker.cpp
@@ -101,7 +102,8 @@ set_target_properties(fx PROPERTIES POSITION_INDEPENDENT_CODE ON
 target_link_libraries(fx PUBLIC onnxruntime Threads::Threads)
 target_compile_definitions(fx PUBLIC
   FX_MODEL_PATH="${FX_MODEL_DIR}/pphumanseg_fp32.onnx"
-  FX_MEDIAPIPE_MODEL_PATH="${FX_MODEL_DIR}/selfie_segmentation.onnx")
+  FX_MEDIAPIPE_MODEL_PATH="${FX_MODEL_DIR}/selfie_segmentation.onnx"
+  FX_RVM_MODEL_PATH="${FX_MODEL_DIR}/rvm_mobilenetv3_fp32.onnx")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE fx)
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
   BUILD_RPATH "\$ORIGIN;${ORT_ROOT}/lib"
@@ -126,6 +128,7 @@ if(BUILD_TESTING)
     tests/test_image_ops.cpp
     tests/test_pp_humanseg.cpp
     tests/test_mediapipe_lite.cpp
+    tests/test_rvm.cpp
     tests/test_worker.cpp
     tests/test_golden.cpp
     tests/test_soak.cpp
