@@ -2,6 +2,7 @@
 
 #include "fx/version.h"
 
-TEST(FxVersion, ReturnsCurrentVersion) {
+TEST(FxVersion, ReturnsCurrentVersion)
+{
 	EXPECT_STREQ(fx::version(), "0.1.0");
 }

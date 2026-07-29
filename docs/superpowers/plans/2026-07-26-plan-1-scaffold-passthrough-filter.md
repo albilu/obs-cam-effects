@@ -383,7 +383,8 @@ This establishes the OBS-free core library and the test loop that all later plan
 
 #include "fx/version.h"
 
-TEST(FxVersion, ReturnsCurrentVersion) {
+TEST(FxVersion, ReturnsCurrentVersion)
+{
 	EXPECT_STREQ(fx::version(), "0.1.0");
 }
 ```
