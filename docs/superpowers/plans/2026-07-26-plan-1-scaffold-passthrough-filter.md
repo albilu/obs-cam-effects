@@ -132,7 +132,7 @@ Open `buildspec.json`. In the top-level object, set:
 "email": "",
 ```
 
-Also find `dependencies."obs-studio".version` and set it to `"32.1.2"` (matches the locally installed OBS; Windows/macOS CI will fetch that version's prebuilts). Leave every other key untouched.
+Also find `dependencies."obs-studio".version` and set it to `"32.1.2"` (matches the locally installed OBS). Leave every other key untouched. (Design amendment 2026-07-26: project is Linux-only, so this pin matters only for the local Linux build; Win/mac prebuilt machinery is out of scope.)
 
 - [ ] **Step 2: Edit `src/plugin-main.c` strings**
 
@@ -316,7 +316,7 @@ Expected: build completes with no errors; the module exists:
 find <BINARY_DIR> -name "obs-cam-effects.so"
 ```
 
-Expected: prints exactly one path, e.g. `<BINARY_DIR>/obs-cam-effects.so`.
+Expected: two byte-identical paths — `<BINARY_DIR>/obs-cam-effects.so` and `<BINARY_DIR>/rundir/RelWithDebInfo/obs-cam-effects.so` (the second is the template's standard "copy to rundir" post-build step, not a duplicate build).
 
 - [ ] **Step 4: Commit** — build artifacts are covered by the template's `.gitignore`; nothing to commit. Skip.
 
@@ -360,7 +360,7 @@ grep -E "obs-cam-effects" /tmp/opencode/obs-smoke.log
 grep -iE "fail.*obs-cam-effects|obs-cam-effects.*fail" /tmp/opencode/obs-smoke.log || echo "OK: no load failures"
 ```
 
-Expected: first command shows a load line for `obs-cam-effects.so` and/or our `plugin loaded successfully` blog line; second command prints `OK: no load failures`. If the module is missing from the log, check `grep -i "error" /tmp/opencode/obs-smoke.log` and report.
+Expected: first command shows a load line for `obs-cam-effects.so` and/or our `plugin loaded successfully` blog line; second command prints `OK: no load failures`. Note: on non-English systems the second grep may match a benign `Failed to load '<locale>' text` warning (e.g. `fr-FR` on a French desktop) — that is OBS's locale fallback, not a load failure; it disappears only if a translation for that locale is shipped. If the module is missing from the log, check `grep -i "error" /tmp/opencode/obs-smoke.log` and report.
 
 - [ ] **Step 4: Commit** — nothing to commit (runtime state only). Skip.
 
@@ -505,7 +505,7 @@ Expected: at least `build-project.yaml` (and likely `push.yaml`/`pr-pull.yaml`);
 
 - [ ] **Step 2: Record the out-of-scope CI verification**
 
-Full CI validation (Windows/macOS/Linux builds, signing on tags) requires pushing to GitHub, which is a user action outside this plan. No local step can substitute; flag this as the plan's one unverified item in the final summary.
+Full CI validation (Linux build; the template's Windows/macOS CI jobs are out of scope per the Linux-only design amendment and should be disabled or removed before the first push) requires pushing to GitHub, which is a user action outside this plan. No local step can substitute; flag this as the plan's one unverified item in the final summary.
 
 - [ ] **Step 3: Final commit (if anything was adjusted) and status check**
 
@@ -525,4 +525,4 @@ Expected: clean tree; commit history shows the five commits from Tasks 2–7 (`i
 - [ ] OBS 32.1.2 loads `obs-cam-effects.so` with no failures in the log
 - [ ] "Camera Effects" filter registered (load line present; filter info compiled in)
 - [ ] Git history: 4–5 clean commits
-- [ ] Known unverified: GitHub CI (needs a push); Windows/macOS builds (CI-only)
+- [ ] Known unverified: GitHub CI (needs a push; Linux-only per design amendment — disable the template's Win/mac jobs before pushing)

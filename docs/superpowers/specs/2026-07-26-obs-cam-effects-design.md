@@ -1,15 +1,16 @@
 # obs-cam-effects — Design Specification
 
-**Date:** 2026-07-26
-**Status:** Approved design, pending user spec review
+**Date:** 2026-07-26 (amended 2026-07-26: Linux-only scope; transparent replace mode)
+**Status:** Approved design
 **License:** Permissive core (MIT or Apache-2.0); encumbered models distributed via runtime download, never bundled.
+**Platform:** Linux only (Windows/macOS support dropped by user decision, see Decisions log #7–8)
 
 ## 1. Overview
 
-obs-cam-effects is a cross-platform OBS Studio plugin providing real-time camera effects through a single combined filter:
+obs-cam-effects is a Linux OBS Studio plugin providing real-time camera effects through a single combined filter:
 
 1. **Background blur** — mask-selective multi-pass blur
-2. **Background replacement** — swap background with a user-provided image
+2. **Background replacement** — swap background with a user-provided image, **or make it transparent** (alpha) so scene sources below the camera show through
 3. **Face swap** — replace the user's face with a face from a user-provided image ("deepfake feed")
 
 Effects are combinable within one filter instance and run in real time (≥30fps at 720p) on mainstream hardware, with GPU acceleration where available.
@@ -20,11 +21,12 @@ Effects are combinable within one filter instance and run in real time (≥30fps
 - Single combined "Camera Effects" filter with per-effect toggles
 - ≥30fps at 720p on a modern CPU without discrete GPU (segmentation effects)
 - ≥30fps at 720p for face swap when a usable GPU execution provider exists; on CPU-only machines the face-swap toggle is shown as unavailable (CPU swap is 200–400ms/frame — not viable)
-- One simple installer per platform: Windows (InnoSetup `.exe`), macOS (signed/notarized `.pkg`), Linux (`.deb` + Flatpak)
+- One simple install path on Linux: `.deb` package + Flatpak (Flatpak OBS cannot see system plugins)
 - Offline-capable out of the box for bundled (permissively licensed) models
 - No camera blackout or freeze on failure unless the user explicitly chooses freeze (privacy mode)
 
 ### Non-goals (YAGNI)
+- **Windows and macOS support** — dropped by user decision (2026-07-26); the design keeps no Win/mac-specific abstractions to maintain
 - Offline/video-editing segmentation (SAM2-style prompt-driven masking) — research shows it is fundamentally unsuited to live filters
 - Multiple simultaneous faces swap with per-face mapping (single prominent face in v1)
 - Face enhancement (GFPGAN) in the real-time path — 20–50ms/frame breaks the budget; may return as an offline/async option later
@@ -65,7 +67,7 @@ Hybrid quality technique: infer mask at model-native resolution (~256×144), tem
 - Inference must run off the OBS graphics thread. obs-backgroundremoval's synchronous `video_tick` inference is its documented weakness (the lite fork exists to fix exactly this). Worker thread from day one.
 - One combined filter, not three stacked filters: OBS has no official cross-filter data-sharing API; stacking would triple readbacks, sessions, and threads.
 - ONNX Runtime (v1.28): CPU-only ORT bundled; GPU execution providers registered at runtime via plugin-EP libraries. CUDA packages (230–430MB) never ship in the installer.
-- Symbol hygiene (export maps, `-Bsymbolic`, Windows delay-load) to avoid collisions with OBS/other plugins.
+- Symbol hygiene (`-Bsymbolic` + version script) to avoid collisions with OBS/other plugins.
 
 ## 4. Decisions log
 
@@ -77,6 +79,8 @@ Hybrid quality technique: infer mask at model-native resolution (~256×144), tem
 | 4 | Plugin license | Permissive core; RVM via runtime download with GPL terms shown | Maximizes adoption; consistent rule: encumbered assets = runtime download |
 | 5 | Architecture | Single combined filter, in-process ORT, worker thread (Approach A) | Ecosystem convergence; best perf; single-installer simplicity |
 | 6 | Failure mode | User-selectable: passthrough (default) or freeze-last-frame | Privacy: passthrough would expose identities the filter exists to hide |
+| 7 | Platform scope (amendment) | Linux only; Windows/macOS dropped | User decision 2026-07-26: eliminates Win/mac packaging, signing/notarization, and DirectML/CoreML provider work |
+| 8 | Replace modes (amendment) | Background replace supports two modes: transparent alpha, or image | User decision 2026-07-26: transparency lets scene sources below show through (the obs-backgroundremoval compositing pattern) |
 
 ## 5. Architecture
 
@@ -94,7 +98,7 @@ obs-cam-effects/
 │   ├── fx/                  # libfx — pure C++, no obs.h includes
 │   │   ├── engine/          # inference runtime abstraction (Model interface)
 │   │   │   ├── ort_backend.cpp    # ONNX Runtime impl + EP detection
-│   │   │   └── ep_probe.cpp       # CoreML / DirectML / CUDA / CPU probe
+│   │   │   └── ep_probe.cpp       # CUDA / CPU probe (Linux-only)
 │   │   ├── models/          # PPHumanSeg, MediaPipe, SINet, RVM, YuNet, Inswapper
 │   │   ├── pipeline/        # SegmentationPipeline, FaceSwapPipeline
 │   │   ├── image/           # temporal smoothing, guided filter, feathering,
@@ -117,7 +121,7 @@ Six modules, one job each:
 
 ### 5.2 Settings (per filter instance)
 
-- Effect toggles: Background blur (strength), Background replace (image path), Face swap (source face image)
+- Effect toggles: Background blur (strength), Background replace (**mode: transparent | image**; image path when mode=image), Face swap (source face image)
 - Model tier: Auto / Lite / Standard / Quality
 - On processing failure: **Show camera feed (default)** / **Freeze last processed frame**
 - AI disclosure watermark: ON by default (visible when face swap active; see §9)
@@ -135,7 +139,8 @@ OBS graphics thread (video_render)
   ├─ mailbox.try_read() → latest published result
   └─ composite via effect shader:
         blur    → multi-pass Kawase blur, mask-selective
-        replace → background image × (1−mask) + source × mask
+        replace → transparent: source drawn with mask as alpha
+                  image: background image × (1−mask) + source × mask
         swap    → swapped-face texture blended over source
      (no result / failure → failure-mode behavior, §8)
 
@@ -170,19 +175,17 @@ Invariants:
 
 Auto = Standard on CPU-only machines; Quality when a usable GPU EP is detected and the required models are downloaded.
 
-### 7.2 Execution provider strategy (ORT v1.28, runtime probe)
+### 7.2 Execution provider strategy (ORT v1.28, runtime probe; Linux-only)
 
-| OS | Baseline (bundled) | Accelerated (runtime-detected) |
-|---|---|---|
-| Windows | ORT CPU (AVX2) | DirectML (best-effort), CUDA via plugin-EP library |
-| macOS | ORT CPU arm64 | CoreML (MLProgram, macOS 12+) |
-| Linux | ORT CPU | CUDA plugin-EP (opt-in), MIGraphX later |
+| Baseline (bundled) | Accelerated (runtime-detected) |
+|---|---|
+| ORT CPU (x86-64, AVX2) | CUDA via plugin-EP library (opt-in); MIGraphX (AMD) later |
 
 Only CPU ORT ships in the installer. GPU EP libraries are registered at runtime when present. Probe failure at any level falls back silently to the tier below, with a one-line note in filter properties ("GPU acceleration unavailable — using CPU").
 
 ### 7.3 Model manager
 
-- Cache dirs: `%PROGRAMDATA%\obs-studio\plugins\obs-cam-effects\models` (Win), `~/Library/Application Support/obs-cam-effects/models` (macOS), `~/.config/obs-cam-effects/models` (Linux)
+- Cache dir: `~/.config/obs-cam-effects/models` (Linux-only)
 - Downloads from HuggingFace; SHA-256 pinned in a plugin-controlled `manifest.json`
 - Consent dialog shows license terms before each first download (GPL-3.0 for RVM; personal/non-commercial for inswapper)
 - Resume support; hash mismatch or partial file → purge; atomic rename so a killed download never leaves a corrupt model
@@ -216,31 +219,28 @@ Both modes show the failure reason in the properties status line and log with an
 
 ## 10. Packaging & distribution
 
-Built on obs-plugintemplate (CMake presets, `buildspec.json` pinned to oldest supported OBS minor — plugins built against newer libobs fail to load on older OBS). GitHub Actions CI: push → build all 3 OSes; semver tag → signed release installers + SLSA attestation.
+Built on obs-plugintemplate (CMake presets, `buildspec.json` pinned to oldest supported OBS minor — plugins built against newer libobs fail to load on older OBS). GitHub Actions CI: push → Linux build; semver tag → release packages. Non-Linux template CI jobs are disabled/removed (Linux-only scope).
 
-| OS | Artifact | Specifics |
-|---|---|---|
-| Windows | InnoSetup `.exe` | ProgramData layout + `manifest.json` for OBS Plugin Manager; ORT DLL side-by-side with delay-load hook; static MSVC runtime; `.def` export map; Azure Trusted Signing (or EV cert) against SmartScreen |
-| macOS | signed + notarized `.pkg` | universal2 `.plugin` bundle; ORT as `@rpath` dylib signed inside-out (Developer ID); `notarytool` in CI; no Rosetta |
-| Linux | `.deb` (CPack, zstd + dbgsym) + Flatpak on Flathub | `/usr/lib/obs-plugins` + data dir; static or `$ORIGIN` RPATH; `-Bsymbolic` + version script; Flatpak extension is mandatory (Flatpak OBS cannot see system plugins) |
+| Artifact | Specifics |
+|---|---|
+| `.deb` (CPack, zstd + dbgsym) | `/usr/lib/obs-plugins` + `/usr/share/obs/obs-plugins/obs-cam-effects` data dir; ORT/OpenCV static-linked or `$ORIGIN` RPATH |
+| Flatpak on Flathub | `com.obsproject.Studio.Plugin.CamEffects` extension — mandatory, Flatpak OBS cannot see system plugins |
 
-Symbol export hygiene on all three platforms. CI matrix: ubuntu-24.04, windows-2022 (VS 17 2022), macos-15 (Xcode 16).
+Symbol export hygiene: `-Bsymbolic` + version script so bundled ORT/OpenCV symbols cannot collide with OBS or other plugins. CI matrix: ubuntu-24.04 only.
 
 ## 11. Testing
 
 - **Unit tests (libfx, GoogleTest, no OBS):** mask temporal smoothing convergence; guided-filter edge quality vs reference; Umeyama alignment sub-pixel stability; paste-back blend bounds; model manifest parsing; hash verification; tier-selection logic; EP probe fallback (mocked).
 - **Golden-frame tests:** fixed inputs → each pipeline → perceptual-hash compare vs approved references (catches model/ORT version regressions).
 - **Load/soak test:** headless libfx driver, 1080p30 for 30 min: fps ≥ 30 on CI CPU, stable RSS, drop policy engages under slowed worker.
-- **Manual QA matrix (release checklist):** 3 OSes × {webcam, media source, browser source (unsupported case)} × stacking with other filters.
+- **Manual QA matrix (release checklist):** {deb-installed OBS, Flatpak OBS} × {webcam, media source, browser source (unsupported case)} × stacking with other filters.
 
 ## 12. Open risks & uncertainties
 
 | Risk | Mitigation |
 |---|---|
 | inswapper license enforcement (gray-zone download pattern; ReActor repo was disabled by GitHub) | Terms shown pre-download; monitor InsightFace licensing; fallback: negotiate license or drop feature |
-| DirectML reliability historically mixed (bgremoval shipped then dropped it) | DML is a best-effort tier, CPU is the guaranteed baseline |
 | GPU acceleration on Linux is the weakest story (NVIDIA user issues upstream) | CUDA strictly opt-in; CPU path must be excellent |
 | Guided-filter edge quality at 256×144 on fine hair | Quality tier (RVM) exists for exactly this; validate in golden-frame tests |
-| macOS signing requires paid Apple Developer ID | Budget $99/yr; without it nothing loads on Apple Silicon |
-| Face-swap fps on Apple Silicon (estimated 30–45fps, unverified) | Early spike: port pipeline, measure on M-series before committing Quality-tier defaults |
+| Face-swap fps on Linux GPUs via CUDA EP (estimated 30–60fps, unverified) | Early spike: port pipeline, measure on a discrete NVIDIA GPU before committing Quality-tier defaults |
 | OBS ABI drift across versions | Pin build to oldest supported minor; test-load on latest in CI |
