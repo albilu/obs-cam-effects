@@ -111,6 +111,8 @@ if(BUILD_TESTING)
     tests/test_image_ops.cpp
     tests/test_pp_humanseg.cpp
     tests/test_worker.cpp
+    tests/test_golden.cpp
+    tests/test_soak.cpp
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
   target_compile_features(fx_tests PRIVATE cxx_std_20)
