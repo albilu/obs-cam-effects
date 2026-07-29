@@ -51,7 +51,7 @@ Investigated as the README's open question. Conclusion: **SAM2 is not viable for
 | Standard (default) | PP-HumanSeg v2-Lite (6.2MB) | Apache-2.0 | 63fps single-thread on Snapdragon 855 (2019 phone); 96.63 mIoU |
 | Quality (GPU) | RVM MobileNetV3 (~15MB) | **GPL-3.0** | 100+fps @1080p on GTX 1080 Ti; recurrent temporal memory = flicker-free hair-level mattes |
 
-Hybrid quality technique: infer mask at model-native resolution (~256×144), temporal EMA smoothing, then guided-filter upsample at composite time using the full-res frame as guide.
+Hybrid quality technique: infer mask at model-native resolution (192×192 for the shipped PP-HumanSeg build), temporal EMA smoothing, then guided-filter edge refinement at mask resolution with GPU bilinear upscale at composite time.
 
 ### 3.2 Face swap
 
@@ -63,7 +63,7 @@ Hybrid quality technique: infer mask at model-native resolution (~256×144), tem
 
 ### 3.3 OBS integration & architecture
 
-- Frame path: `video_render` → render parent into a small texrender at model resolution (256×144 BGRA ≈ 147KB) → `gs_stage_texture` → worker thread → composite via custom effect shaders. ~50× less readback than full-res staging.
+- Frame path: `video_render` → render parent into a small texrender at model resolution (192×192 BGRA ≈ 147KB) → `gs_stage_texture` → worker thread → composite via custom effect shaders. ~50× less readback than full-res staging. (Model-native resolution confirmed 192×192 for the chosen PP-HumanSeg ONNX during Plan 2 spike.)
 - Inference must run off the OBS graphics thread. obs-backgroundremoval's synchronous `video_tick` inference is its documented weakness (the lite fork exists to fix exactly this). Worker thread from day one.
 - One combined filter, not three stacked filters: OBS has no official cross-filter data-sharing API; stacking would triple readbacks, sessions, and threads.
 - ONNX Runtime (v1.28): CPU-only ORT bundled; GPU execution providers registered at runtime via plugin-EP libraries. CUDA packages (230–430MB) never ship in the installer.
@@ -113,7 +113,7 @@ obs-cam-effects/
 Six modules, one job each:
 
 1. **Filter shell** — registers the filter; owns settings; never blocks.
-2. **Staging** — GPU→CPU frame handoff at 256×144.
+2. **Staging** — GPU→CPU frame handoff at 192×192.
 3. **Engine** — ORT behind a `Model` interface; EP probe picks the best available provider; CPU guaranteed baseline.
 4. **Pipelines** — `SegmentationPipeline` (mask shared by blur+replace), `FaceSwapPipeline` (detect→align→swap→blend). Fixed order: face swap first, then background ops on the swapped frame.
 5. **Worker** — one thread per filter instance; latest-frame-wins drop policy; results mailbox.
@@ -134,7 +134,7 @@ Three thread roles; the OBS graphics thread never blocks on inference:
 
 ```
 OBS graphics thread (video_render)
-  ├─ render parent → texrender @ 256×144 (BGRA)
+  ├─ render parent → texrender @ 192×192 (BGRA)
   ├─ gs_stage_texture → map → copy 147KB → input queue (SPSC, try-lock; drop if busy)
   ├─ mailbox.try_read() → latest published result
   └─ composite via effect shader:
@@ -161,7 +161,7 @@ Invariants:
 
 - Inference latency never stalls rendering; the effect may lag 1–2 frames (invisible for masks, acceptable for swap).
 - Model switches happen under a worker-side mutex; the graphics thread only sees immutable published results.
-- Segmentation always infers at model-native resolution; output-res masks come from the guided filter.
+- Segmentation always infers at model-native resolution (192×192); guided-filter edge refinement runs at mask resolution with the small staged frame as guide; final upscale to output resolution is GPU bilinear in the composite shader (full-res guided upsampling is deferred as a quality option).
 
 ## 7. Models, tiers & execution providers
 
@@ -241,6 +241,6 @@ Symbol export hygiene: `-Bsymbolic` + version script so bundled ORT/OpenCV symbo
 |---|---|
 | inswapper license enforcement (gray-zone download pattern; ReActor repo was disabled by GitHub) | Terms shown pre-download; monitor InsightFace licensing; fallback: negotiate license or drop feature |
 | GPU acceleration on Linux is the weakest story (NVIDIA user issues upstream) | CUDA strictly opt-in; CPU path must be excellent |
-| Guided-filter edge quality at 256×144 on fine hair | Quality tier (RVM) exists for exactly this; validate in golden-frame tests |
+| Guided-filter edge quality at 192×192 on fine hair | Quality tier (RVM) exists for exactly this; validate in golden-frame tests |
 | Face-swap fps on Linux GPUs via CUDA EP (estimated 30–60fps, unverified) | Early spike: port pipeline, measure on a discrete NVIDIA GPU before committing Quality-tier defaults |
 | OBS ABI drift across versions | Pin build to oldest supported minor; test-load on latest in CI |
