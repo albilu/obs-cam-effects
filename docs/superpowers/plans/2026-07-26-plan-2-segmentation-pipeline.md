@@ -853,15 +853,18 @@ TEST(Worker, ProcessesAndPublishesLatest)
 
 TEST(Worker, LatestWinsDropsStaleFrames)
 {
-	/* Processor blocks on a latch; while blocked, submit 3 frames.
-	 * After release, the NEXT processed frame must be the newest. */
+	/* The first processor call blocks inside the latch. While it is
+	 * blocked, submit frames 20 and 30: 30 must replace 20. After
+	 * release, exactly one more frame is processed and it is 30 —
+	 * a FIFO queue would process 20 next (processed would reach 3). */
 	std::latch gate(2);
 	std::atomic<int> processed{0};
 	std::atomic<uint8_t> lastSeen{0};
 	auto blocking = [&](const fx::Frame &f) {
-		if (processed.fetch_add(1) == 0)
-			gate.count_down(); // first call: hold until released
+		int n = processed.fetch_add(1) + 1;
 		lastSeen.store(f.bgra[0]);
+		if (n == 1)
+			gate.arrive_and_wait();
 		auto m = std::make_shared<fx::Mask>();
 		m->width = 1;
 		m->height = 1;
@@ -871,13 +874,16 @@ TEST(Worker, LatestWinsDropsStaleFrames)
 	fx::Worker w(blocking);
 	w.start();
 	w.submit(makeFrame(10));
-	std::this_thread::sleep_for(20ms); // first frame picked up
+	for (int i = 0; i < 100 && processed.load() < 1; i++)
+		std::this_thread::sleep_for(5ms); // wait until worker is blocked in the latch
+	ASSERT_EQ(processed.load(), 1);
 	w.submit(makeFrame(20));
-	w.submit(makeFrame(30)); // replaces 20
-	gate.count_down();       // release the gate
+	w.submit(makeFrame(30)); // replaces 20 in the pending slot
+	gate.count_down();       // release the first call
 	for (int i = 0; i < 100 && processed.load() < 2; i++)
 		std::this_thread::sleep_for(5ms);
 	w.stop();
+	ASSERT_EQ(processed.load(), 2);
 	ASSERT_EQ(lastSeen.load(), 30);
 }
 
@@ -1020,7 +1026,12 @@ void Worker::loop()
 			frame = std::move(pending_);
 			pending_.reset();
 		}
-		std::shared_ptr<Mask> result = processor_(*frame);
+		std::shared_ptr<Mask> result;
+		try {
+			result = processor_(*frame);
+		} catch (...) {
+			continue; // skip publish; staleness signals failure upstream
+		}
 		{
 			std::lock_guard<std::mutex> lk(outM_);
 			latest_ = std::move(result);

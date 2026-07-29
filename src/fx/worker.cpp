@@ -75,7 +75,12 @@ void Worker::loop()
 			frame = std::move(pending_);
 			pending_.reset();
 		}
-		std::shared_ptr<Mask> result = processor_(*frame);
+		std::shared_ptr<Mask> result;
+		try {
+			result = processor_(*frame);
+		} catch (...) {
+			continue; // skip publish; staleness signals failure upstream
+		}
 		{
 			std::lock_guard<std::mutex> lk(outM_);
 			latest_ = std::move(result);
