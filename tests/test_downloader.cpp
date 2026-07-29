@@ -53,16 +53,18 @@ bool waitDone(Downloader &d, int ms)
 
 TEST(Downloader, DownloadsAndVerifiesFileUrl)
 {
+	std::system("mkdir -p /tmp/opencode");
 	std::string src = writeFixture(tmpPath("src.bin"), "hello fx downloader\n");
 	std::string dst = tmpPath("dst.bin");
 	std::remove(dst.c_str());
+	std::remove((dst + ".part").c_str());
 
 	Downloader d;
 	fx::models_dl::DownloadRequest req;
 	req.url = "file://" + src;
 	req.destPath = dst;
 	req.sha256 = sha256Of(src);
-	req.expectedSize = 19;
+	req.expectedSize = 20;
 	d.start(req);
 
 	ASSERT_TRUE(waitDone(d, 10000));
@@ -75,9 +77,11 @@ TEST(Downloader, DownloadsAndVerifiesFileUrl)
 
 TEST(Downloader, HashMismatchIsError)
 {
+	std::system("mkdir -p /tmp/opencode");
 	std::string src = writeFixture(tmpPath("src2.bin"), "bad hash test\n");
 	std::string dst = tmpPath("dst2.bin");
 	std::remove(dst.c_str());
+	std::remove((dst + ".part").c_str());
 
 	Downloader d;
 	fx::models_dl::DownloadRequest req;
@@ -90,10 +94,13 @@ TEST(Downloader, HashMismatchIsError)
 	ASSERT_TRUE(waitDone(d, 10000));
 	ASSERT_EQ(d.state(), State::Error);
 	ASSERT_FALSE(d.error().empty());
+	std::ifstream part(dst + ".part");
+	ASSERT_FALSE(part.is_open());
 }
 
 TEST(Downloader, ExtractsTgzMembers)
 {
+	std::system("mkdir -p /tmp/opencode");
 	/* Build a tiny tgz fixture: root/pkg/file.txt = "payload". */
 	std::string root = tmpPath("tgzsrc");
 	std::string mk = "mkdir -p " + root + "/pkg && printf payload > " +
@@ -102,6 +109,7 @@ TEST(Downloader, ExtractsTgzMembers)
 	ASSERT_EQ(std::system(mk.c_str()), 0);
 	std::string dst = tmpPath("f2.tgz");
 	std::remove(dst.c_str());
+	std::remove((dst + ".part").c_str());
 	std::string outDir = tmpPath("tgzout");
 	std::string mkOut = "mkdir -p " + outDir;
 	ASSERT_EQ(std::system(mkOut.c_str()), 0);
@@ -121,6 +129,41 @@ TEST(Downloader, ExtractsTgzMembers)
 	std::string content((std::istreambuf_iterator<char>(f)),
 			    std::istreambuf_iterator<char>());
 	ASSERT_EQ(content, "payload");
+}
+
+TEST(Downloader, RestartAfterDoneWorks)
+{
+	std::system("mkdir -p /tmp/opencode");
+	std::string src1 = writeFixture(tmpPath("r1.bin"), "first\n");
+	std::string dst1 = tmpPath("rd1.bin");
+	std::remove(dst1.c_str());
+	std::remove((dst1 + ".part").c_str());
+
+	Downloader d;
+	fx::models_dl::DownloadRequest req;
+	req.url = "file://" + src1;
+	req.destPath = dst1;
+	req.sha256 = sha256Of(src1);
+	d.start(req);
+
+	ASSERT_TRUE(waitDone(d, 10000));
+	ASSERT_EQ(d.state(), State::Done) << d.error();
+
+	std::string src2 = writeFixture(tmpPath("r2.bin"), "second fixture\n");
+	std::string dst2 = tmpPath("rd2.bin");
+	std::remove(dst2.c_str());
+	std::remove((dst2 + ".part").c_str());
+	req.url = "file://" + src2;
+	req.destPath = dst2;
+	req.sha256 = sha256Of(src2);
+	d.start(req);
+
+	ASSERT_TRUE(waitDone(d, 10000));
+	ASSERT_EQ(d.state(), State::Done) << d.error();
+	std::ifstream f(dst2);
+	std::string content((std::istreambuf_iterator<char>(f)),
+			    std::istreambuf_iterator<char>());
+	ASSERT_EQ(content, "second fixture\n");
 }
 
 TEST(Downloader, StateNamesAreStable)

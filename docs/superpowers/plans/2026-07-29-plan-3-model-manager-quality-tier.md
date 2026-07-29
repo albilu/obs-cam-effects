@@ -254,6 +254,7 @@ git commit -m "feat: generalize OrtModel to multi-input multi-output sessions"
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -437,6 +438,41 @@ TEST(Downloader, ExtractsTgzMembers)
 	ASSERT_EQ(content, "payload");
 }
 
+TEST(Downloader, RestartAfterDoneWorks)
+{
+	std::system("mkdir -p /tmp/opencode");
+	std::string src1 = writeFixture(tmpPath("r1.bin"), "first\n");
+	std::string dst1 = tmpPath("rd1.bin");
+	std::remove(dst1.c_str());
+	std::remove((dst1 + ".part").c_str());
+
+	Downloader d;
+	fx::models_dl::DownloadRequest req;
+	req.url = "file://" + src1;
+	req.destPath = dst1;
+	req.sha256 = sha256Of(src1);
+	d.start(req);
+
+	ASSERT_TRUE(waitDone(d, 10000));
+	ASSERT_EQ(d.state(), State::Done) << d.error();
+
+	std::string src2 = writeFixture(tmpPath("r2.bin"), "second fixture\n");
+	std::string dst2 = tmpPath("rd2.bin");
+	std::remove(dst2.c_str());
+	std::remove((dst2 + ".part").c_str());
+	req.url = "file://" + src2;
+	req.destPath = dst2;
+	req.sha256 = sha256Of(src2);
+	d.start(req);
+
+	ASSERT_TRUE(waitDone(d, 10000));
+	ASSERT_EQ(d.state(), State::Done) << d.error();
+	std::ifstream f(dst2);
+	std::string content((std::istreambuf_iterator<char>(f)),
+			    std::istreambuf_iterator<char>());
+	ASSERT_EQ(content, "second fixture\n");
+}
+
 TEST(Downloader, StateNamesAreStable)
 {
 	ASSERT_STREQ(fx::models_dl::stateName(State::Done), "done");
@@ -488,15 +524,26 @@ Downloader::~Downloader()
 
 void Downloader::start(const DownloadRequest &req)
 {
-	State expected = State::Idle;
-	if (!state_.compare_exchange_strong(expected, State::Downloading) &&
-	    expected != State::Done && expected != State::Error) {
-		throw std::runtime_error("fx-dl: downloader busy");
+	State expected = state_.load();
+	for (;;) {
+		if (expected == State::Downloading ||
+		    expected == State::Verifying ||
+		    expected == State::Extracting) {
+			throw std::runtime_error("fx-dl: downloader busy");
+		}
+		/* Idle, Done or Error: try to claim the downloader. */
+		if (state_.compare_exchange_weak(expected, State::Downloading))
+			break;
 	}
+	if (thread_.joinable())
+		thread_.join();
 	cancel_.store(false);
-	error_.clear();
+	{
+		std::lock_guard<std::mutex> lk(errorM_);
+		error_.clear();
+		destPath_ = req.destPath;
+	}
 	expectedSize_.store(req.expectedSize);
-	destPath_ = req.destPath;
 	thread_ = std::thread([this, req] { run(req); });
 }
 
@@ -516,8 +563,12 @@ double Downloader::progress() const
 	uint64_t total = expectedSize_.load();
 	if (total == 0)
 		return -1.0;
+	std::string part;
+	{
+		std::lock_guard<std::mutex> lk(errorM_);
+		part = destPath_ + ".part";
+	}
 	struct stat st;
-	std::string part = destPath_ + ".part";
 	if (stat(part.c_str(), &st) != 0)
 		return 0.0;
 	double p = (double)st.st_size / (double)total;
@@ -597,7 +648,11 @@ void Downloader::run(DownloadRequest req)
 	if (!req.extractMembers.empty()) {
 		state_.store(State::Extracting);
 		std::string mk = "mkdir -p " + shellQuote(req.extractDestDir);
-		runCmd(mk);
+		rc = runCmd(mk);
+		if (rc != 0) {
+			fail("mkdir failed with exit code " + std::to_string(rc));
+			return;
+		}
 		std::string tar = "tar xzf " + shellQuote(part) + " -C " +
 				  shellQuote(req.extractDestDir);
 		for (const auto &m : req.extractMembers)
@@ -610,9 +665,8 @@ void Downloader::run(DownloadRequest req)
 		}
 		std::remove(part.c_str());
 	} else {
-		std::string tmpFinal = req.destPath + ".verify";
-		std::rename(part.c_str(), tmpFinal.c_str());
-		if (std::rename(tmpFinal.c_str(), req.destPath.c_str()) != 0) {
+		if (std::rename(part.c_str(), req.destPath.c_str()) != 0) {
+			std::remove(part.c_str());
 			fail("atomic rename failed");
 			return;
 		}
