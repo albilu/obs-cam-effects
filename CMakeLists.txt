@@ -70,6 +70,17 @@ if(NOT EXISTS "${FX_MODEL_DIR}/pphumanseg_fp32.onnx")
     EXPECTED_HASH SHA256=363552428d64011b9242e0889f90e06cf2c30370908a2a9641dbdd8d37a5f2a6)
 endif()
 
+# --- Bundled segmentation model: MediaPipe Selfie Seg (Apache-2.0, Lite tier) ---
+if(NOT EXISTS "${FX_MODEL_DIR}/selfie_segmentation.onnx")
+  file(DOWNLOAD
+    "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/selfie_segmentation.onnx"
+    ${FX_MODEL_DIR}/selfie_segmentation.onnx
+    EXPECTED_HASH SHA256=1511ab5564cb0ae179cba9bcad6ad931003ccc71656f11fd270967023678c6a5)
+  file(DOWNLOAD
+    "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/selfie_segmentation.onnx.license"
+    ${FX_MODEL_DIR}/selfie_segmentation.onnx.license)
+endif()
+
 find_package(Threads REQUIRED)
 
 # --- libfx: OBS-free core library (all inference code lives here from Plan 2) ---
@@ -78,6 +89,7 @@ add_library(fx STATIC
   src/fx/engine/ort_backend.cpp
   src/fx/image/ops.cpp
   src/fx/models/pp_humanseg.cpp
+  src/fx/models/mediapipe_lite.cpp
   src/fx/models_dl/downloader.cpp
   src/fx/pipeline/segmentation_pipeline.cpp
   src/fx/worker.cpp
@@ -87,7 +99,9 @@ target_compile_features(fx PUBLIC cxx_std_17)
 set_target_properties(fx PROPERTIES POSITION_INDEPENDENT_CODE ON
                                     BUILD_RPATH ${ORT_ROOT}/lib)
 target_link_libraries(fx PUBLIC onnxruntime Threads::Threads)
-target_compile_definitions(fx PUBLIC FX_MODEL_PATH="${FX_MODEL_DIR}/pphumanseg_fp32.onnx")
+target_compile_definitions(fx PUBLIC
+  FX_MODEL_PATH="${FX_MODEL_DIR}/pphumanseg_fp32.onnx"
+  FX_MEDIAPIPE_MODEL_PATH="${FX_MODEL_DIR}/selfie_segmentation.onnx")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE fx)
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
   BUILD_RPATH "\$ORIGIN;${ORT_ROOT}/lib"
@@ -111,6 +125,7 @@ if(BUILD_TESTING)
     tests/test_ort_backend.cpp
     tests/test_image_ops.cpp
     tests/test_pp_humanseg.cpp
+    tests/test_mediapipe_lite.cpp
     tests/test_worker.cpp
     tests/test_golden.cpp
     tests/test_soak.cpp

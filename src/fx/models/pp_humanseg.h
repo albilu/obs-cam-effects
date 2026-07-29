@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fx/engine/ort_backend.h"
+#include "fx/models/segmentation_model.h"
 #include "fx/types.h"
 
 #include <string>
@@ -12,13 +13,13 @@ namespace fx {
  * Preprocessing matches obs-backgroundremoval: BGR order kept,
  * (v/256 - 0.5)/0.5, NCHW. Postprocess: output channel 1 = person,
  * min-max normalized to [0,1]. */
-class PPHumanSeg {
+class PPHumanSeg : public SegmentationModel {
 public:
 	static constexpr int kSize = 192;
 
 	explicit PPHumanSeg(const std::string &modelPath, int threads = 2);
 
-	Mask infer(const Frame &frame);
+	Mask infer(const Frame &frame) override;
 
 private:
 	OrtModel model_;
