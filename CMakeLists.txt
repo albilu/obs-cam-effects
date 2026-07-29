@@ -76,6 +76,7 @@ find_package(Threads REQUIRED)
 add_library(fx STATIC
   src/fx/version.cpp
   src/fx/engine/ort_backend.cpp
+  src/fx/image/ops.cpp
   src/fx/models/pp_humanseg.cpp
 )
 target_include_directories(fx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -105,6 +106,7 @@ if(BUILD_TESTING)
   add_executable(fx_tests
     tests/test_version.cpp
     tests/test_ort_backend.cpp
+    tests/test_image_ops.cpp
     tests/test_pp_humanseg.cpp
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
