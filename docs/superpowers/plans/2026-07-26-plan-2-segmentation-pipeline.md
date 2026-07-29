@@ -2025,10 +2025,13 @@ TDD flow for this test: write it with `GOLDEN_MEAN 0.0`, `GOLDEN_VAR 0.0`, `GOLD
 
 #include <atomic>
 #include <chrono>
+#include <iostream>
 #include <thread>
 
-/* Soak: 600 frames through the worker; asserts throughput and that the
- * drop policy engages (processed < submitted when worker is saturated). */
+/* Soak: 600 frames through the worker, submitted slightly faster than
+ * the pipeline can process, so the worker stays saturated and the
+ * latest-wins drop policy must engage (processed < submitted).
+ * Asserts sustained throughput > 30 fps. */
 TEST(Soak, ThroughputAndDropPolicy)
 {
 	fx::SegmentationPipeline pipe(FX_MODEL_PATH, 2);
@@ -2048,12 +2051,12 @@ TEST(Soak, ThroughputAndDropPolicy)
 		f->height = 192;
 		f->bgra.assign(192u * 192u * 4u, (uint8_t)(i & 0xFF));
 		w.submit(std::move(f));
+		/* Throttle submission (~1000 fps): an unthrottled burst
+		 * finishes in ~30 ms and latest-wins collapses all 600
+		 * frames into ~2 processed, leaving the worker idle for
+		 * the rest of the measurement window. */
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
-	uint64_t seq = 0;
-	while (processed.load() < 1)
-		std::this_thread::sleep_for(std::chrono::milliseconds(5));
-	/* Drain: wait until worker caught up (no pending, latest seq). */
-	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 	w.stop();
 	auto t1 = std::chrono::steady_clock::now();
 
@@ -2062,13 +2065,15 @@ TEST(Soak, ThroughputAndDropPolicy)
 			.count();
 	uint64_t done = processed.load();
 	double fps = done / (ms / 1000.0);
-	std::cout << "soak: " << done << " frames in " << ms
+	std::cout << "soak: " << done << "/" << kFrames << " frames in " << ms
 		  << " ms = " << fps << " fps" << std::endl;
 	EXPECT_GT(fps, 30.0);
-	EXPECT_LE(done, (uint64_t)kFrames); // drop policy bounds work
-	(void)seq;
+	/* Saturation => drops must have occurred. */
+	EXPECT_LT(done, (uint64_t)kFrames);
 }
 ```
+
+NOTE: this block was corrected during implementation — the original burst version collapsed to ~2 processed frames then idled, measuring ~4fps on fast machines. The throttled version sustains saturation; `EXPECT_LT` (not `EXPECT_LE`) actually proves drops.
 
 Add both files to fx_tests sources in CMakeLists.txt.
 
@@ -2078,7 +2083,7 @@ Add both files to fx_tests sources in CMakeLists.txt.
 cmake --build --preset ubuntu-x86_64 && ctest --test-dir build_x86_64 --output-on-failure
 ```
 
-Expected: all pass (13 tests + golden + soak). Record the soak fps in the report.
+Expected: all pass (14 tests: 12 + golden + soak). Record the soak fps in the report.
 
 - [ ] **Step 4: Commit**
 
