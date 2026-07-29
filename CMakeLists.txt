@@ -34,7 +34,7 @@ if(ENABLE_QT)
   )
 endif()
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c src/cam-effects-filter.c)
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c src/cam-effects-filter.c src/fx_bridge.cpp)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
@@ -89,7 +89,7 @@ target_link_libraries(fx PUBLIC onnxruntime Threads::Threads)
 target_compile_definitions(fx PUBLIC FX_MODEL_PATH="${FX_MODEL_DIR}/pphumanseg_fp32.onnx")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE fx)
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
-  BUILD_RPATH "${ORT_ROOT}/lib;\$ORIGIN"
+  BUILD_RPATH "\$ORIGIN;${ORT_ROOT}/lib"
   INSTALL_RPATH "$ORIGIN")
 
 # --- Tests ---

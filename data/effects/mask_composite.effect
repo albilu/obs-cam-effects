@@ -1,0 +1,74 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d mask;
+uniform texture2d bg_image;
+uniform texture2d blur_image;
+
+sampler_state def_sampler {
+	Filter = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv : TEXCOORD0;
+};
+
+VertData mainTransform(VertData v_in)
+{
+	VertData v_out;
+	v_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	v_out.uv = v_in.uv;
+	return v_out;
+}
+
+float4 DrawTransparent(VertData v_in) : TARGET
+{
+	float4 rgba = image.Sample(def_sampler, v_in.uv);
+	float a = mask.Sample(def_sampler, v_in.uv).r;
+	return float4(rgba.rgb, rgba.a * a);
+}
+
+float4 DrawReplace(VertData v_in) : TARGET
+{
+	float4 rgba = image.Sample(def_sampler, v_in.uv);
+	float4 bg = bg_image.Sample(def_sampler, v_in.uv);
+	float a = mask.Sample(def_sampler, v_in.uv).r;
+	return float4(bg.rgb * (1.0 - a) + rgba.rgb * a, rgba.a);
+}
+
+float4 DrawBlur(VertData v_in) : TARGET
+{
+	float4 sharp = image.Sample(def_sampler, v_in.uv);
+	float4 blurred = blur_image.Sample(def_sampler, v_in.uv);
+	float a = mask.Sample(def_sampler, v_in.uv).r;
+	return float4(blurred.rgb * (1.0 - a) + sharp.rgb * a, sharp.a);
+}
+
+technique DrawTransparent
+{
+	pass
+	{
+		vertex_shader = mainTransform(v_in);
+		pixel_shader = DrawTransparent(v_in);
+	}
+}
+
+technique DrawReplace
+{
+	pass
+	{
+		vertex_shader = mainTransform(v_in);
+		pixel_shader = DrawReplace(v_in);
+	}
+}
+
+technique DrawBlur
+{
+	pass
+	{
+		vertex_shader = mainTransform(v_in);
+		pixel_shader = DrawBlur(v_in);
+	}
+}
