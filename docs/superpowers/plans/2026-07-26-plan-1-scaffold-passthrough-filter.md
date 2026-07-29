@@ -331,9 +331,11 @@ Expected: prints exactly one path, e.g. `<BINARY_DIR>/obs-cam-effects.so`.
 ```bash
 mkdir -p ~/.config/obs-studio/plugins/obs-cam-effects/bin/64bit
 cp "$(find build_x86_64 -name obs-cam-effects.so | head -1)" ~/.config/obs-studio/plugins/obs-cam-effects/bin/64bit/
+mkdir -p ~/.config/obs-studio/plugins/obs-cam-effects/data/locale
+cp data/locale/en-US.ini ~/.config/obs-studio/plugins/obs-cam-effects/data/locale/
 ```
 
-(If `<BINARY_DIR>` from Task 5 differs, substitute it.) Expected: no output; `ls ~/.config/obs-studio/plugins/obs-cam-effects/bin/64bit/` shows `obs-cam-effects.so`.
+(If `<BINARY_DIR>` from Task 5 differs, substitute it.) Expected: no output; `ls ~/.config/obs-studio/plugins/obs-cam-effects/bin/64bit/` shows `obs-cam-effects.so` and `ls ~/.config/obs-studio/plugins/obs-cam-effects/data/locale/` shows `en-US.ini`.
 
 - [ ] **Step 2: Run OBS and capture the startup log**
 
