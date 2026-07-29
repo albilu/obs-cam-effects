@@ -25,7 +25,7 @@ but the main difference is that obs-cam-effects is designed to bring all these f
 
 4- We should also consider the performance implications of running multiple filters simultaneously, and ensure that our plugin is optimized for real-time performance.
 
-5- Plugin must be cross-platform and compatible obs-studio on Windows, macOS, and Linux. Installation and configuration should be straightforward, with minimal setup required: single installer or package for each platform.
+5- Installation and configuration should be straightforward, with minimal setup required: single installer or package.
 
 ## Resources
 
