@@ -1454,6 +1454,8 @@ git commit -m "feat: tier picker, mask tuning params, download flow, hot-swap"
 
 - [ ] **Step 1: Create `src/fx/engine/ep_probe.h`**
 
+NOTE (review finding from Task 5): the provider tar extraction nests the libs under `onnxruntime-linux-x64-gpu_cuda13-1.28.0/lib/…` in the providers dir. Handle it in THIS task: either (a) add a `stripComponents` field to `fx::models_dl::DownloadRequest` (default 0; the bridge passes 2 for the provider so the .so files land flat in the providers dir — append ` --strip-components=N` to the tar command when > 0), or (b) make EpProbe check both the flat and nested paths. Prefer (a) — flat layout is cleaner.
+
 ```cpp
 #pragma once
 
