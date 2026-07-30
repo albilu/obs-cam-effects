@@ -99,7 +99,8 @@ target_include_directories(fx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(fx PUBLIC cxx_std_17)
 set_target_properties(fx PROPERTIES POSITION_INDEPENDENT_CODE ON
                                     BUILD_RPATH ${ORT_ROOT}/lib)
-target_link_libraries(fx PUBLIC onnxruntime Threads::Threads)
+# libatomic: __atomic_load_16 etc. for std::atomic<MaskParams> (16 bytes)
+target_link_libraries(fx PUBLIC onnxruntime Threads::Threads atomic)
 target_compile_definitions(fx PUBLIC
   FX_MODEL_PATH="${FX_MODEL_DIR}/pphumanseg_fp32.onnx"
   FX_MEDIAPIPE_MODEL_PATH="${FX_MODEL_DIR}/selfie_segmentation.onnx"

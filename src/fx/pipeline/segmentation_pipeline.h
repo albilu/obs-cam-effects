@@ -3,6 +3,7 @@
 #include "fx/models/segmentation_model.h"
 #include "fx/types.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -30,12 +31,20 @@ public:
 
 	std::shared_ptr<Mask> process(const Frame &frame);
 
-	void setMaskParams(const MaskParams &p) { params_ = p; }
-	MaskParams maskParams() const { return params_; }
+	void setMaskParams(const MaskParams &p)
+	{
+		params_.store(p, std::memory_order_relaxed);
+	}
+	MaskParams maskParams() const
+	{
+		return params_.load(std::memory_order_relaxed);
+	}
 
 private:
 	std::unique_ptr<SegmentationModel> model_;
-	MaskParams params_;
+	/* Atomic (trivially copyable struct): written by the UI thread via
+	 * the bridge, read per frame by the worker thread. */
+	std::atomic<MaskParams> params_{MaskParams{}};
 	std::shared_ptr<Mask> prev_;
 };
 

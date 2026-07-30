@@ -28,21 +28,22 @@ SegmentationPipeline::SegmentationPipeline(SegTier tier,
 
 std::shared_ptr<Mask> SegmentationPipeline::process(const Frame &frame)
 {
+	const MaskParams p = params_.load(std::memory_order_relaxed);
 	auto m = std::make_shared<Mask>(model_->infer(frame));
 	if (prev_ && prev_->px.size() == m->px.size())
-		emaMask(*m, *prev_, params_.beta);
+		emaMask(*m, *prev_, p.beta);
 	std::vector<float> guide = grayFromBgra(frame);
 	if ((int)guide.size() == m->width * m->height)
 		m->px = guidedFilter(guide, m->px, m->width, m->height, 4,
 				     0.01f);
-	if (params_.threshold > 0.0f) {
+	if (p.threshold > 0.0f) {
 		for (float &v : m->px)
-			v = (v >= params_.threshold) ? 1.0f : 0.0f;
+			v = (v >= p.threshold) ? 1.0f : 0.0f;
 	}
-	if (params_.contourFrac > 0.0f)
-		contourFilter(*m, params_.contourFrac);
-	if (params_.featherRadius > 0.0f)
-		featherMask(*m, params_.featherRadius);
+	if (p.contourFrac > 0.0f)
+		contourFilter(*m, p.contourFrac);
+	if (p.featherRadius > 0.0f)
+		featherMask(*m, p.featherRadius);
 	prev_ = m;
 	return m;
 }

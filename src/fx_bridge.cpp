@@ -103,8 +103,7 @@ struct cam_fx {
 	std::string standardPath;
 	std::string qualityPath;
 	int threads = 2;
-	int requestedTier = 0; // 0=auto, 1=lite, 2=standard, 3=quality
-	int tierInEffect = 0;  // (int)fx::SegTier + 1
+	int tierInEffect = 0; // (int)fx::SegTier + 1
 	fx::MaskParams params;
 
 	uint64_t seenSeq = 0;
@@ -324,7 +323,6 @@ int cam_fx_is_fresh(cam_fx_t *fx, uint64_t max_age_ms)
 
 void cam_fx_set_tier(cam_fx_t *fx, int tier)
 {
-	fx->requestedTier = tier;
 	fx::SegTier resolved = resolveTier(tier, fx->qualityPath);
 	if (fx->pipeline && fx->tierInEffect == (int)resolved + 1)
 		return; // idempotent: effective tier unchanged
