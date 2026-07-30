@@ -39,6 +39,13 @@ void Worker::stop()
 		thread_.join();
 }
 
+void Worker::setProcessor(Processor processor)
+{
+	std::lock_guard<std::mutex> lk(inM_);
+	pending_.reset();
+	processor_ = std::move(processor);
+}
+
 void Worker::submit(std::shared_ptr<Frame> frame)
 {
 	{
@@ -65,6 +72,7 @@ void Worker::loop()
 {
 	while (running_.load()) {
 		std::shared_ptr<Frame> frame;
+		Processor processor;
 		{
 			std::unique_lock<std::mutex> lk(inM_);
 			inCv_.wait(lk, [this] {
@@ -74,10 +82,14 @@ void Worker::loop()
 				break;
 			frame = std::move(pending_);
 			pending_.reset();
+			/* Copy the processor under the same lock so a
+			 * concurrent setProcessor can't tear it; the local
+			 * copy keeps the old pipeline alive mid-call. */
+			processor = processor_;
 		}
 		std::shared_ptr<Mask> result;
 		try {
-			result = processor_(*frame);
+			result = processor(*frame);
 		} catch (...) {
 			continue; // skip publish; staleness signals failure upstream
 		}

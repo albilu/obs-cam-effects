@@ -14,7 +14,8 @@
  * Asserts sustained throughput > 30 fps. */
 TEST(Soak, ThroughputAndDropPolicy)
 {
-	fx::SegmentationPipeline pipe(FX_MODEL_PATH, 2);
+	fx::SegmentationPipeline pipe(fx::SegTier::Standard, "",
+				      FX_MODEL_PATH, "", 2);
 	std::atomic<uint64_t> processed{0};
 	fx::Worker w([&](const fx::Frame &f) {
 		auto m = pipe.process(f);

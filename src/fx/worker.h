@@ -29,6 +29,10 @@ public:
 	void start();
 	void stop(); // idempotent; joins
 
+	/* Replaces the processor (model hot-swap). Clears any pending frame
+	 * so no frame is processed by a stale/torn pipeline. */
+	void setProcessor(Processor processor);
+
 	void submit(std::shared_ptr<Frame> frame);
 
 	/* Latest published mask and its sequence (0 = none yet). */

@@ -110,9 +110,39 @@ TEST(Worker, ProcessorThrowDoesNotCrash)
 	SUCCEED(); // reaching here means no std::terminate
 }
 
+TEST(Worker, SetProcessorSwapsSafely)
+{
+	std::atomic<int> which{0};
+	auto mk = [](int id) {
+		return [id](const fx::Frame &) {
+			auto m = std::make_shared<fx::Mask>();
+			m->width = 1;
+			m->height = 1;
+			m->px = {(float)id};
+			return m;
+		};
+	};
+	fx::Worker w(mk(1));
+	w.start();
+	std::this_thread::sleep_for(10ms);
+	w.setProcessor(mk(2));
+	std::this_thread::sleep_for(10ms);
+	w.submit(makeFrame(1));
+	uint64_t seq = 0;
+	std::shared_ptr<const fx::Mask> m;
+	for (int i = 0; i < 100 && seq == 0; i++) {
+		std::this_thread::sleep_for(5ms);
+		m = w.tryGetLatest(seq);
+	}
+	w.stop();
+	ASSERT_EQ(seq, 1u);
+	ASSERT_FLOAT_EQ(m->px[0], 2.0f);
+}
+
 TEST(SegmentationPipeline, EndToEndWithRealModel)
 {
-	fx::SegmentationPipeline pipe(FX_MODEL_PATH, 1);
+	fx::SegmentationPipeline pipe(fx::SegTier::Standard, "",
+				      FX_MODEL_PATH, "", 1);
 	fx::Frame f;
 	f.width = 320;
 	f.height = 240;

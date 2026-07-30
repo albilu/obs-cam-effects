@@ -97,4 +97,63 @@ std::vector<float> guidedFilter(const std::vector<float> &guide,
 	return q;
 }
 
+void contourFilter(Mask &m, float frac)
+{
+	const int w = m.width, h = m.height;
+	const size_t n = (size_t)w * h;
+	if (m.px.size() != n)
+		return;
+	const float minArea = frac * (float)n;
+	std::vector<uint8_t> seen(n, 0);
+	std::vector<size_t> stack;
+	std::vector<size_t> comp;
+	for (size_t start = 0; start < n; start++) {
+		if (seen[start] || m.px[start] < 0.5f)
+			continue;
+		/* Flood-fill one 4-connected foreground component. */
+		comp.clear();
+		stack.push_back(start);
+		seen[start] = 1;
+		while (!stack.empty()) {
+			size_t idx = stack.back();
+			stack.pop_back();
+			comp.push_back(idx);
+			const int x = (int)(idx % (size_t)w);
+			const int y = (int)(idx / (size_t)w);
+			const int dx[4] = {-1, 1, 0, 0};
+			const int dy[4] = {0, 0, -1, 1};
+			for (int k = 0; k < 4; k++) {
+				int nx = x + dx[k], ny = y + dy[k];
+				if (nx < 0 || ny < 0 || nx >= w || ny >= h)
+					continue;
+				size_t q = (size_t)ny * w + nx;
+				if (!seen[q] && m.px[q] >= 0.5f) {
+					seen[q] = 1;
+					stack.push_back(q);
+				}
+			}
+		}
+		if ((float)comp.size() < minArea)
+			for (size_t idx : comp)
+				m.px[idx] = 0.0f;
+	}
+}
+
+void featherMask(Mask &m, float radius)
+{
+	int r = (int)(radius + 0.5f);
+	if (r < 0)
+		r = 0;
+	if (r > 16)
+		r = 16;
+	if (r == 0)
+		return;
+	const int w = m.width, h = m.height;
+	if ((size_t)(w * h) != m.px.size())
+		return;
+	std::vector<double> blurred = boxBlur(m.px, w, h, r);
+	for (size_t i = 0; i < m.px.size(); i++)
+		m.px[i] = (float)blurred[i];
+}
+
 } // namespace fx

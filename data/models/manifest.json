@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "rvm_mobilenetv3_fp32",
+      "kind": "model",
+      "tier": "quality",
+      "file": "rvm_mobilenetv3_fp32.onnx",
+      "url": "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/rvm_mobilenetv3_fp32.onnx",
+      "license_url": "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/rvm_mobilenetv3_fp32.onnx.license",
+      "sha256": "88d4531297118f595bf2fd60f6f566aec2e559393802d1f436c380f0cbbd2828",
+      "size": 14975696,
+      "license": "GPL-3.0-only",
+      "notice": "Robust Video Matting (RVM) MobileNetV3, licensed GPL-3.0-only. By downloading you accept the license terms."
+    },
+    {
+      "id": "ort_cuda_ep_1.28.0",
+      "kind": "provider",
+      "tier": "cuda",
+      "file": "libonnxruntime_providers_cuda.so",
+      "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-gpu_cuda13-1.28.0.tgz",
+      "sha256": "84d28f27589090b280d4312743efd3d450cd4ac7d1e1d75e7d9076d9637bf9de",
+      "size": 240874643,
+      "license": "MIT",
+      "extract": [
+        "onnxruntime-linux-x64-gpu_cuda13-1.28.0/lib/libonnxruntime_providers_cuda.so",
+        "onnxruntime-linux-x64-gpu_cuda13-1.28.0/lib/libonnxruntime_providers_shared.so"
+      ],
+      "notice": "NVIDIA CUDA execution provider for ONNX Runtime 1.28.0 (MIT). ~240 MB download, optional."
+    }
+  ]
+}

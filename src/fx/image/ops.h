@@ -19,4 +19,11 @@ std::vector<float> guidedFilter(const std::vector<float> &guide,
 				const std::vector<float> &src, int w, int h,
 				int r, float eps);
 
+/* Zeroes connected components smaller than frac * (w*h) in a binarized
+ * (>= 0.5) mask. 4-connectivity, iterative flood fill. */
+void contourFilter(Mask &m, float frac);
+
+/* Blurs the mask with a box blur of the given radius (px). 0 = no-op. */
+void featherMask(Mask &m, float radius);
+
 } // namespace fx

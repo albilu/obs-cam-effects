@@ -35,7 +35,8 @@ TEST(Golden, MaskStatisticsMatchRecordedRun)
 		}
 	}
 
-	fx::SegmentationPipeline pipe(FX_MODEL_PATH, 1);
+	fx::SegmentationPipeline pipe(fx::SegTier::Standard, "",
+				      FX_MODEL_PATH, "", 1);
 	auto m = pipe.process(f);
 
 	double mean = 0, sq = 0;

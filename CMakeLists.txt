@@ -126,6 +126,7 @@ if(BUILD_TESTING)
     tests/test_version.cpp
     tests/test_ort_backend.cpp
     tests/test_image_ops.cpp
+    tests/test_mask_ops2.cpp
     tests/test_pp_humanseg.cpp
     tests/test_mediapipe_lite.cpp
     tests/test_rvm.cpp

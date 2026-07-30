@@ -5,11 +5,19 @@
 #include <obs-module.h>
 #include <graphics/image-file.h>
 
+#include <stdio.h>
+#include <stdlib.h>
+
 #define SETTING_MODE "mode"
 #define SETTING_IMAGE_PATH "image_path"
 #define SETTING_BLUR_STRENGTH "blur_strength"
 #define SETTING_FAILURE "failure_mode"
 #define SETTING_STATUS "status"
+#define SETTING_TIER "tier"
+#define SETTING_MASK_THRESHOLD "mask_threshold"
+#define SETTING_MASK_CONTOUR "mask_contour"
+#define SETTING_MASK_FEATHER "mask_feather"
+#define SETTING_MASK_TEMPORAL "mask_temporal"
 
 #define STAGE_SIZE 192
 #define MASK_STALE_MS 1000
@@ -37,6 +45,18 @@ static int parse_failure(const char *s)
 	return FAILURE_PASSTHROUGH;
 }
 
+/* 0=auto, 1=lite, 2=standard, 3=quality. */
+static int parse_tier(const char *s)
+{
+	if (strcmp(s, "lite") == 0)
+		return 1;
+	if (strcmp(s, "standard") == 0)
+		return 2;
+	if (strcmp(s, "quality") == 0)
+		return 3;
+	return 0;
+}
+
 struct cam_effects_filter {
 	obs_source_t *source;
 
@@ -54,6 +74,8 @@ struct cam_effects_filter {
 	atomic_int mode_id;    /* enum cam_mode */
 	atomic_int failure_id; /* enum cam_failure */
 	int blur_strength;
+	int tier;	    /* 0=auto, 1=lite, 2=standard, 3=quality */
+	char status[512];
 	char *image_path;
 	gs_image_file_t bg_image;
 	bool bg_loaded;
@@ -136,6 +158,74 @@ static void cam_effects_destroy(void *data)
 	bfree(filter);
 }
 
+/* Composes the status line shown in the properties dialog. Called from
+ * update() and the download-button callbacks; the dialog picks the text
+ * up when (re)opened — OBS properties are static while open. */
+static void cam_effects_compose_status(struct cam_effects_filter *filter)
+{
+	static const char *tier_names[] = {"auto", "lite", "standard",
+					   "quality"};
+	if (!filter->fx) {
+		snprintf(filter->status, sizeof(filter->status),
+			 "Engine not started (select a background mode).");
+		return;
+	}
+	int eff = cam_fx_tier_in_effect(filter->fx);
+	const char *eff_name =
+		(eff >= 1 && eff <= 3) ? tier_names[eff] : "unknown";
+	int req = filter->tier;
+	const char *req_name =
+		(req >= 0 && req <= 3) ? tier_names[req] : "auto";
+
+	char dl_state[32] = {0};
+	double dl_prog = -1.0;
+	cam_fx_download_state(filter->fx, dl_state, sizeof(dl_state),
+			      &dl_prog);
+	char dl_text[96];
+	if (strcmp(dl_state, "downloading") == 0 && dl_prog >= 0.0)
+		snprintf(dl_text, sizeof(dl_text), "downloading %.0f%%",
+			 dl_prog * 100.0);
+	else
+		snprintf(dl_text, sizeof(dl_text), "%s",
+			 dl_state[0] ? dl_state : "idle");
+
+	snprintf(filter->status, sizeof(filter->status),
+		 "Tier: %s (selected: %s) | Quality model: %s | Download: "
+		 "%s | Backend: CPU | %llu fps",
+		 eff_name, req_name,
+		 cam_fx_quality_available(filter->fx) ? "downloaded"
+						      : "not downloaded",
+		 dl_text, (unsigned long long)cam_fx_fps(filter->fx));
+}
+
+static bool cam_effects_download_rvm_clicked(obs_properties_t *props,
+					     obs_property_t *property,
+					     void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(property);
+	struct cam_effects_filter *filter = data;
+	if (filter && filter->fx) {
+		cam_fx_start_download(filter->fx, "rvm_mobilenetv3_fp32");
+		cam_effects_compose_status(filter);
+	}
+	return true; /* refresh properties (status shows new state) */
+}
+
+static bool cam_effects_download_cuda_clicked(obs_properties_t *props,
+					      obs_property_t *property,
+					      void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(property);
+	struct cam_effects_filter *filter = data;
+	if (filter && filter->fx) {
+		cam_fx_start_download(filter->fx, "ort_cuda_ep_1.28.0");
+		cam_effects_compose_status(filter);
+	}
+	return true;
+}
+
 static void cam_effects_update(void *data, obs_data_t *settings)
 {
 	struct cam_effects_filter *filter = data;
@@ -154,6 +244,15 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 		bstrdup(obs_data_get_string(settings, SETTING_IMAGE_PATH));
 	filter->blur_strength =
 		(int)obs_data_get_int(settings, SETTING_BLUR_STRENGTH);
+	filter->tier = parse_tier(obs_data_get_string(settings, SETTING_TIER));
+	float mask_threshold =
+		(float)obs_data_get_double(settings, SETTING_MASK_THRESHOLD);
+	float mask_contour =
+		(float)obs_data_get_double(settings, SETTING_MASK_CONTOUR);
+	float mask_feather =
+		(float)obs_data_get_double(settings, SETTING_MASK_FEATHER);
+	float mask_temporal =
+		(float)obs_data_get_double(settings, SETTING_MASK_TEMPORAL);
 
 	/* Free any previous background image (destroys its texture, so
 	 * inside the graphics lock). */
@@ -181,13 +280,33 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 	if (!filter->fx &&
 	    atomic_load_explicit(&filter->mode_id, memory_order_relaxed) !=
 		    MODE_OFF) {
-		char *model = obs_module_file("models/pphumanseg_fp32.onnx");
+		char *lite = obs_module_file("models/selfie_segmentation.onnx");
+		char *standard =
+			obs_module_file("models/pphumanseg_fp32.onnx");
+		const char *home = getenv("HOME");
+		char quality[1024];
+		snprintf(quality, sizeof(quality),
+			 "%s/.config/obs-cam-effects/models/"
+			 "rvm_mobilenetv3_fp32.onnx",
+			 home ? home : ".");
 		obs_enter_graphics();
-		if (model)
-			filter->fx = cam_fx_create(model, 2);
+		if (lite && standard)
+			filter->fx = cam_fx_create(lite, standard, quality, 2);
 		obs_leave_graphics();
-		bfree(model);
+		bfree(lite);
+		bfree(standard);
 	}
+
+	/* Apply tier + mask params on every update: cheap and idempotent
+	 * (the bridge rebuilds the pipeline only when the effective tier
+	 * changes). */
+	if (filter->fx) {
+		cam_fx_set_tier(filter->fx, filter->tier);
+		cam_fx_set_mask_params(filter->fx, mask_threshold,
+				       mask_contour, mask_feather,
+				       mask_temporal);
+	}
+	cam_effects_compose_status(filter);
 }
 
 static void cam_effects_get_defaults(obs_data_t *settings)
@@ -195,11 +314,16 @@ static void cam_effects_get_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, SETTING_MODE, "transparent");
 	obs_data_set_default_string(settings, SETTING_FAILURE, "passthrough");
 	obs_data_set_default_int(settings, SETTING_BLUR_STRENGTH, 2);
+	obs_data_set_default_string(settings, SETTING_TIER, "auto");
+	obs_data_set_default_double(settings, SETTING_MASK_THRESHOLD, 0.0);
+	obs_data_set_default_double(settings, SETTING_MASK_CONTOUR, 0.0);
+	obs_data_set_default_double(settings, SETTING_MASK_FEATHER, 0.0);
+	obs_data_set_default_double(settings, SETTING_MASK_TEMPORAL, 0.6);
 }
 
 static obs_properties_t *cam_effects_properties(void *data)
 {
-	UNUSED_PARAMETER(data);
+	struct cam_effects_filter *filter = data;
 	obs_properties_t *props = obs_properties_create();
 
 	obs_property_t *mode = obs_properties_add_list(
@@ -216,6 +340,26 @@ static obs_properties_t *cam_effects_properties(void *data)
 	obs_properties_add_int_slider(props, SETTING_BLUR_STRENGTH,
 				      "Blur strength", 1, 4, 1);
 
+	obs_property_t *tier = obs_properties_add_list(
+		props, SETTING_TIER, "Segmentation model",
+		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(tier, "Auto (recommended)", "auto");
+	obs_property_list_add_string(tier, "Lite (fastest)", "lite");
+	obs_property_list_add_string(tier, "Standard", "standard");
+	obs_property_list_add_string(tier, "Quality (downloaded model)",
+				     "quality");
+
+	obs_properties_add_float_slider(props, SETTING_MASK_THRESHOLD,
+					"Mask threshold", 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(props, SETTING_MASK_CONTOUR,
+					"Mask contour cleanup", 0.0, 0.5,
+					0.01);
+	obs_properties_add_float_slider(props, SETTING_MASK_FEATHER,
+					"Mask feather", 0.0, 8.0, 0.5);
+	obs_properties_add_float_slider(props, SETTING_MASK_TEMPORAL,
+					"Temporal smoothing", 0.0, 0.95,
+					0.05);
+
 	obs_property_t *fm = obs_properties_add_list(
 		props, SETTING_FAILURE, "On processing failure",
 		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -223,8 +367,29 @@ static obs_properties_t *cam_effects_properties(void *data)
 	obs_property_list_add_string(fm, "Freeze last processed frame",
 				     "freeze");
 
-	obs_properties_add_text(props, SETTING_STATUS, "Status",
-				OBS_TEXT_INFO);
+	char notice[512] = {0};
+	if (filter && filter->fx)
+		cam_fx_notice(filter->fx, "rvm_mobilenetv3_fp32", notice,
+			      sizeof(notice));
+	if (notice[0] == '\0')
+		snprintf(notice, sizeof(notice), "%s",
+			 "Robust Video Matting (RVM) MobileNetV3, licensed "
+			 "GPL-3.0-only. By downloading you accept the "
+			 "license terms.");
+	obs_properties_add_text(props, "rvm_notice", notice, OBS_TEXT_INFO);
+
+	obs_properties_add_button(props, "download_btn",
+				  "Download Quality model (GPL-3.0, 15 MB)",
+				  cam_effects_download_rvm_clicked);
+	obs_properties_add_button(
+		props, "download_cuda_btn",
+		"Download GPU acceleration (MIT, ~240 MB)",
+		cam_effects_download_cuda_clicked);
+
+	const char *status = (filter && filter->status[0])
+				     ? filter->status
+				     : "Status unavailable";
+	obs_properties_add_text(props, SETTING_STATUS, status, OBS_TEXT_INFO);
 	return props;
 }
 
