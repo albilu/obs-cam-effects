@@ -168,6 +168,9 @@ void Downloader::run(DownloadRequest req)
 		}
 		std::string tar = "tar xzf " + shellQuote(part) + " -C " +
 				  shellQuote(req.extractDestDir);
+		if (req.stripComponents > 0)
+			tar += " --strip-components=" +
+			       std::to_string(req.stripComponents);
 		for (const auto &m : req.extractMembers)
 			tar += " " + shellQuote(m);
 		rc = runCmd(tar);

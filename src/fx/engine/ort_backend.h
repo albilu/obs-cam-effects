@@ -5,11 +5,29 @@
 #include <string>
 #include <vector>
 
+namespace fx::engine {
+
+/* Process-wide shared ONNX Runtime environment. Plugin execution
+ * providers (CUDA) register per-env, so every session that may use
+ * them must be created on this one env. ORT documents Env as shareable
+ * across sessions and threads.
+ *
+ * Lifetime: function-local static, destroyed at process exit. Every
+ * Ort::Session created on it must be destroyed BEFORE that. This holds
+ * for normal fx usage (pipelines die with the OBS filter / at test
+ * end) and for any static whose construction completed after the first
+ * sharedEnv() call (reverse destruction order). A leaked OrtModel that
+ * is destroyed after main() would touch a dead env — don't do that. */
+Ort::Env &sharedEnv();
+
+} // namespace fx::engine
+
 namespace fx {
 
 /* Wrapper around an ONNX Runtime session with dynamic IO discovery.
  * Supports multi-input multi-output models (RVM: 6 in / 6 out);
- * single-IO models use the convenience accessors. */
+ * single-IO models use the convenience accessors.
+ * All sessions are created on fx::engine::sharedEnv(). */
 class OrtModel {
 public:
 	struct TensorDesc {
@@ -17,7 +35,13 @@ public:
 		std::vector<int64_t> shape;
 	};
 
-	explicit OrtModel(const std::string &modelPath, int intraOpThreads = 2);
+	/* providersDir: when non-empty and the CUDA provider library is
+	 * present and registers (see EpProbe), the session is attempted
+	 * with the CUDA execution provider; ANY failure (append or CUDA
+	 * init) silently falls back to a plain CPU session. usesCuda()
+	 * reports which happened. */
+	explicit OrtModel(const std::string &modelPath, int intraOpThreads = 2,
+			  const std::string &providersDir = "");
 
 	size_t inputCount() const { return inputs_.size(); }
 	size_t outputCount() const { return outputs_.size(); }
@@ -27,6 +51,9 @@ public:
 	/* Backward-compatible single-IO accessors. */
 	const TensorDesc &input() const { return inputs_.at(0); }
 	const TensorDesc &output() const { return outputs_.at(0); }
+
+	/* True when this session runs on the CUDA execution provider. */
+	bool usesCuda() const { return cuda_; }
 
 	/* Single-IO run (existing behavior). */
 	std::vector<float> run(const std::vector<float> &inputData);
@@ -47,8 +74,15 @@ private:
 	std::vector<std::vector<float>>
 	runImpl(const std::vector<std::vector<float>> &inputData,
 		const std::vector<std::vector<int64_t>> *overrides);
-	Ort::Env env_;
+	/* Runs the session; on a CUDA session's run-time failure, degrades
+	 * permanently to a fresh CPU session and retries once. */
+	std::vector<Ort::Value> tryRun(std::vector<Ort::Value> &inTensors,
+				       std::vector<const char *> &inNames,
+				       std::vector<const char *> &outNames);
 	Ort::Session session_;
+	bool cuda_ = false;
+	std::string modelPath_;
+	int intraOpThreads_ = 2;
 	std::vector<TensorDesc> inputs_;
 	std::vector<TensorDesc> outputs_;
 };

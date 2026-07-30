@@ -6,8 +6,10 @@
 
 namespace fx {
 
-Rvm::Rvm(const std::string &modelPath, int threads)
-	: model_(modelPath, threads), tensor_(3 * kSize * kSize)
+Rvm::Rvm(const std::string &modelPath, int threads,
+	 const std::string &providersDir)
+	: model_(modelPath, threads, providersDir),
+	  tensor_(3 * kSize * kSize)
 {
 	if (model_.inputCount() != 6 || model_.outputCount() != 6)
 		throw std::runtime_error("fx: unexpected RVM IO count");

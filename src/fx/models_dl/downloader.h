@@ -18,6 +18,10 @@ struct DownloadRequest {
 	 * (relative to archive root) into extractDestDir, then delete the tgz. */
 	std::vector<std::string> extractMembers;
 	std::string extractDestDir;
+	/* Passed to tar as --strip-components=N when > 0: drops the N
+	 * leading path components of extracted members (e.g. 2 makes the
+	 * ORT provider libs land flat in extractDestDir). */
+	int stripComponents = 0;
 };
 
 enum class State { Idle, Downloading, Verifying, Extracting, Done, Error };

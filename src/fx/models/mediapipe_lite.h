@@ -15,9 +15,11 @@ class MediaPipeLite : public SegmentationModel {
 public:
 	static constexpr int kSize = 256;
 
-	explicit MediaPipeLite(const std::string &modelPath, int threads = 2);
+	explicit MediaPipeLite(const std::string &modelPath, int threads = 2,
+			       const std::string &providersDir = "");
 
 	Mask infer(const Frame &frame) override;
+	bool usesCuda() const override { return model_.usesCuda(); }
 
 private:
 	OrtModel model_;

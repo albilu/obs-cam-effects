@@ -24,12 +24,17 @@ class SegmentationPipeline {
 public:
 	/* Creates a pipeline for the given tier.
 	 * modelPaths: lite / standard / quality ONNX paths (quality may be
-	 * empty ONLY if tier != Quality). Throws on missing/invalid model. */
+	 * empty ONLY if tier != Quality). Throws on missing/invalid model.
+	 * providersDir: dir with the CUDA provider library ("" = CPU). */
 	SegmentationPipeline(SegTier tier, const std::string &litePath,
 			     const std::string &standardPath,
-			     const std::string &qualityPath, int threads = 2);
+			     const std::string &qualityPath, int threads = 2,
+			     const std::string &providersDir = "");
 
 	std::shared_ptr<Mask> process(const Frame &frame);
+
+	/* True when the active model runs on the CUDA execution provider. */
+	bool usesCuda() const { return model_ && model_->usesCuda(); }
 
 	void setMaskParams(const MaskParams &p)
 	{

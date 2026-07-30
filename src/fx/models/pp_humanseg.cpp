@@ -6,8 +6,10 @@
 
 namespace fx {
 
-PPHumanSeg::PPHumanSeg(const std::string &modelPath, int threads)
-	: model_(modelPath, threads), tensor_(3 * kSize * kSize)
+PPHumanSeg::PPHumanSeg(const std::string &modelPath, int threads,
+		       const std::string &providersDir)
+	: model_(modelPath, threads, providersDir),
+	  tensor_(3 * kSize * kSize)
 {
 	const auto &shape = model_.input().shape;
 	if (shape.size() != 4 || shape[1] != 3 || shape[2] != kSize ||

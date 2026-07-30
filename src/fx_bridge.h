@@ -64,6 +64,10 @@ int cam_fx_notice(cam_fx_t *fx, const char *id, char *buf, int buf_len);
 /* Masks published per second (last completed 1s window). */
 uint64_t cam_fx_fps(cam_fx_t *fx);
 
+/* Active processing backend name ("CPU" or "CUDA") for status display.
+ * Returns 0 on success, -1 on NULL fx. */
+int cam_fx_backend(cam_fx_t *fx, char *buf, int buf_len);
+
 #ifdef __cplusplus
 }
 #endif

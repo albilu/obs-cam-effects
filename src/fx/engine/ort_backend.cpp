@@ -1,16 +1,74 @@
 #include "fx/engine/ort_backend.h"
 
+#include "fx/engine/ep_probe.h"
+
 #include <stdexcept>
+#include <unordered_map>
+
+namespace fx::engine {
+
+Ort::Env &sharedEnv()
+{
+	static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "fx");
+	return env;
+}
+
+} // namespace fx::engine
 
 namespace fx {
 
-OrtModel::OrtModel(const std::string &modelPath, int intraOpThreads)
-	: env_(ORT_LOGGING_LEVEL_WARNING, "fx"), session_(nullptr)
+namespace {
+
+Ort::SessionOptions makeSessionOptions(int intraOpThreads, bool cuda)
 {
 	Ort::SessionOptions opts;
 	opts.SetIntraOpNumThreads(intraOpThreads);
 	opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-	session_ = Ort::Session(env_, modelPath.c_str(), opts);
+	if (cuda) {
+		/* Append the first CUDA EP device registered on the
+		 * shared env (plugin EP path, ORT 1.28). */
+		std::vector<Ort::ConstEpDevice> eps;
+		for (const auto &d : engine::sharedEnv().GetEpDevices()) {
+			const char *name = d.EpName();
+			if (name &&
+			    std::string(name).find("CUDA") !=
+				    std::string::npos) {
+				eps.push_back(d);
+				break;
+			}
+		}
+		if (eps.empty())
+			throw std::runtime_error("fx: no CUDA EP device");
+		opts.AppendExecutionProvider_V2(
+			engine::sharedEnv(), eps,
+			std::unordered_map<std::string, std::string>{});
+	}
+	return opts;
+}
+
+} // namespace
+
+OrtModel::OrtModel(const std::string &modelPath, int intraOpThreads,
+		   const std::string &providersDir)
+	: session_(nullptr), modelPath_(modelPath),
+	  intraOpThreads_(intraOpThreads)
+{
+	if (!providersDir.empty() && EpProbe::cudaAvailable(providersDir)) {
+		try {
+			session_ = Ort::Session(
+				engine::sharedEnv(), modelPath.c_str(),
+				makeSessionOptions(intraOpThreads, true));
+			cuda_ = true;
+		} catch (...) {
+			/* CUDA append or session init failed: CPU-only
+			 * fallback (fx is OBS-free, nothing to log to). */
+			cuda_ = false;
+		}
+	}
+	if (!cuda_)
+		session_ = Ort::Session(
+			engine::sharedEnv(), modelPath.c_str(),
+			makeSessionOptions(intraOpThreads, false));
 
 	if (session_.GetInputCount() == 0 || session_.GetOutputCount() == 0)
 		throw std::runtime_error("fx: model with no inputs/outputs");
@@ -70,9 +128,7 @@ OrtModel::runImpl(const std::vector<std::vector<float>> &inputData,
 	for (const auto &o : outputs_)
 		outNames.push_back(o.name.c_str());
 
-	auto outs = session_.Run(Ort::RunOptions{nullptr}, inNames.data(),
-				 inTensors.data(), inTensors.size(),
-				 outNames.data(), outNames.size());
+	auto outs = tryRun(inTensors, inNames, outNames);
 
 	std::vector<std::vector<float>> result;
 	result.reserve(outs.size());
@@ -82,6 +138,32 @@ OrtModel::runImpl(const std::vector<std::vector<float>> &inputData,
 		result.emplace_back(data, data + count);
 	}
 	return result;
+}
+
+std::vector<Ort::Value>
+OrtModel::tryRun(std::vector<Ort::Value> &inTensors,
+		 std::vector<const char *> &inNames,
+		 std::vector<const char *> &outNames)
+{
+	try {
+		return session_.Run(Ort::RunOptions{nullptr}, inNames.data(),
+				    inTensors.data(), inTensors.size(),
+				    outNames.data(), outNames.size());
+	} catch (...) {
+		if (!cuda_)
+			throw;
+		/* The CUDA EP loaded but fails at run time (e.g. broken
+		 * cuDNN/driver on the host): degrade permanently to a CPU
+		 * session instead of failing every frame. */
+		cuda_ = false;
+		session_ = Ort::Session(engine::sharedEnv(),
+					modelPath_.c_str(),
+					makeSessionOptions(intraOpThreads_,
+							   false));
+		return session_.Run(Ort::RunOptions{nullptr}, inNames.data(),
+				    inTensors.data(), inTensors.size(),
+				    outNames.data(), outNames.size());
+	}
 }
 
 std::vector<std::vector<float>>

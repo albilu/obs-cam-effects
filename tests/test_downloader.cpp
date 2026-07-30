@@ -131,6 +131,41 @@ TEST(Downloader, ExtractsTgzMembers)
 	ASSERT_EQ(content, "payload");
 }
 
+TEST(Downloader, StripComponentsLandsFlat)
+{
+	std::system("mkdir -p /tmp/opencode");
+	/* Same fixture as ExtractsTgzMembers: root/pkg/file.txt. */
+	std::string root = tmpPath("tgzsrc");
+	std::string dst = tmpPath("f3.tgz");
+	std::remove(dst.c_str());
+	std::remove((dst + ".part").c_str());
+	std::string outDir = tmpPath("tgzflat");
+	std::string mkOut = "rm -rf " + outDir + " && mkdir -p " + outDir;
+	ASSERT_EQ(std::system(mkOut.c_str()), 0);
+
+	Downloader d;
+	fx::models_dl::DownloadRequest req;
+	req.url = "file://" + tmpPath("f.tgz");
+	req.destPath = dst;
+	req.sha256 = sha256Of(tmpPath("f.tgz"));
+	req.extractMembers = {"./pkg/file.txt"};
+	req.extractDestDir = outDir;
+	/* GNU tar counts the leading "./" as a component: 2 strips it
+	 * plus "pkg", so file.txt lands flat (same value the bridge
+	 * passes for the CUDA provider download). */
+	req.stripComponents = 2;
+	d.start(req);
+
+	ASSERT_TRUE(waitDone(d, 10000));
+	ASSERT_EQ(d.state(), State::Done) << d.error();
+	std::ifstream f(outDir + "/file.txt");
+	std::string content((std::istreambuf_iterator<char>(f)),
+			    std::istreambuf_iterator<char>());
+	ASSERT_EQ(content, "payload");
+	std::ifstream nested(outDir + "/pkg/file.txt");
+	ASSERT_FALSE(nested.is_open());
+}
+
 TEST(Downloader, RestartAfterDoneWorks)
 {
 	std::system("mkdir -p /tmp/opencode");

@@ -10,6 +10,10 @@ class SegmentationModel {
 public:
 	virtual ~SegmentationModel() = default;
 	virtual Mask infer(const Frame &frame) = 0;
+
+	/* True when inference runs on the CUDA execution provider
+	 * (status display only). */
+	virtual bool usesCuda() const { return false; }
 };
 
 } // namespace fx

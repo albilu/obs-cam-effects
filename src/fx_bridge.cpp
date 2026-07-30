@@ -1,5 +1,6 @@
 #include "fx_bridge.h"
 
+#include "fx/engine/ep_probe.h"
 #include "fx/models_dl/downloader.h"
 #include "fx/pipeline/segmentation_pipeline.h"
 #include "fx/worker.h"
@@ -143,7 +144,7 @@ bool buildAndSwap(cam_fx *fx, fx::SegTier tier)
 	try {
 		auto p = std::make_shared<fx::SegmentationPipeline>(
 			tier, fx->litePath, fx->standardPath, fx->qualityPath,
-			fx->threads);
+			fx->threads, cacheDir("providers"));
 		p->setMaskParams(fx->params);
 		fx->pipeline = p;
 		fx->tierInEffect = (int)tier + 1;
@@ -373,6 +374,9 @@ int cam_fx_start_download(cam_fx_t *fx, const char *id)
 		req.destPath = cacheDir("providers") + "/" + entry->id + ".tgz";
 		req.extractMembers = entry->extract;
 		req.extractDestDir = cacheDir("providers");
+		/* The provider tar nests the .so files under
+		 * <pkg>/lib/: strip 2 components so they land flat. */
+		req.stripComponents = 2;
 	} else {
 		req.destPath = cacheDir("models") + "/" + entry->file;
 	}
@@ -419,6 +423,17 @@ int cam_fx_notice(cam_fx_t *fx, const char *id, char *buf, int buf_len)
 uint64_t cam_fx_fps(cam_fx_t *fx)
 {
 	return fx->fpsLast;
+}
+
+int cam_fx_backend(cam_fx_t *fx, char *buf, int buf_len)
+{
+	if (!fx)
+		return -1;
+	if (buf && buf_len > 0)
+		snprintf(buf, (size_t)buf_len, "%s",
+			 fx::EpProbe::backendName(fx->pipeline &&
+						  fx->pipeline->usesCuda()));
+	return 0;
 }
 
 } // extern "C"

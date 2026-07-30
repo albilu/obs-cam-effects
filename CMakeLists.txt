@@ -86,6 +86,7 @@ find_package(Threads REQUIRED)
 # --- libfx: OBS-free core library (all inference code lives here from Plan 2) ---
 add_library(fx STATIC
   src/fx/version.cpp
+  src/fx/engine/ep_probe.cpp
   src/fx/engine/ort_backend.cpp
   src/fx/image/ops.cpp
   src/fx/models/pp_humanseg.cpp
@@ -135,6 +136,7 @@ if(BUILD_TESTING)
     tests/test_golden.cpp
     tests/test_soak.cpp
     tests/test_downloader.cpp
+    tests/test_ep_probe.cpp
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
   target_compile_features(fx_tests PRIVATE cxx_std_20)

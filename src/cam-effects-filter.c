@@ -189,13 +189,16 @@ static void cam_effects_compose_status(struct cam_effects_filter *filter)
 		snprintf(dl_text, sizeof(dl_text), "%s",
 			 dl_state[0] ? dl_state : "idle");
 
+	char backend[16] = "CPU";
+	cam_fx_backend(filter->fx, backend, sizeof(backend));
+
 	snprintf(filter->status, sizeof(filter->status),
 		 "Tier: %s (selected: %s) | Quality model: %s | Download: "
-		 "%s | Backend: CPU | %llu fps",
+		 "%s | Backend: %s | %llu fps",
 		 eff_name, req_name,
 		 cam_fx_quality_available(filter->fx) ? "downloaded"
 						      : "not downloaded",
-		 dl_text, (unsigned long long)cam_fx_fps(filter->fx));
+		 dl_text, backend, (unsigned long long)cam_fx_fps(filter->fx));
 }
 
 static bool cam_effects_download_rvm_clicked(obs_properties_t *props,
