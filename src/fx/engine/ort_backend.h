@@ -74,11 +74,14 @@ private:
 	std::vector<std::vector<float>>
 	runImpl(const std::vector<std::vector<float>> &inputData,
 		const std::vector<std::vector<int64_t>> *overrides);
-	/* Runs the session; on a CUDA session's run-time failure, degrades
-	 * permanently to a fresh CPU session and retries once. */
+	/* Runs the session via IoBinding (outputs bound to CPU memory, so
+	 * device tensors are copied back by ORT); on a CUDA session's
+	 * run-time failure, degrades permanently to a fresh CPU session
+	 * and retries once. */
 	std::vector<Ort::Value> tryRun(std::vector<Ort::Value> &inTensors,
 				       std::vector<const char *> &inNames,
-				       std::vector<const char *> &outNames);
+				       std::vector<const char *> &outNames,
+				       Ort::MemoryInfo &cpuMem);
 	Ort::Session session_;
 	bool cuda_ = false;
 	std::string modelPath_;

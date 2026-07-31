@@ -128,7 +128,7 @@ OrtModel::runImpl(const std::vector<std::vector<float>> &inputData,
 	for (const auto &o : outputs_)
 		outNames.push_back(o.name.c_str());
 
-	auto outs = tryRun(inTensors, inNames, outNames);
+	auto outs = tryRun(inTensors, inNames, outNames, mem);
 
 	std::vector<std::vector<float>> result;
 	result.reserve(outs.size());
@@ -143,12 +143,27 @@ OrtModel::runImpl(const std::vector<std::vector<float>> &inputData,
 std::vector<Ort::Value>
 OrtModel::tryRun(std::vector<Ort::Value> &inTensors,
 		 std::vector<const char *> &inNames,
-		 std::vector<const char *> &outNames)
+		 std::vector<const char *> &outNames,
+		 Ort::MemoryInfo &cpuMem)
 {
+	/* IoBinding with outputs bound to CPU memory: ORT copies results
+	 * back from the device (required for the CUDA EP — raw Run()
+	 * returns device-resident tensors whose pointers must not be
+	 * dereferenced on the host). Zero-copy for CPU sessions. */
+	auto runBound = [&]() {
+		Ort::IoBinding binding(session_);
+		for (size_t i = 0; i < inTensors.size(); i++)
+			binding.BindInput(inNames[i], inTensors[i]);
+		for (size_t i = 0; i < outNames.size(); i++)
+			binding.BindOutput(outNames[i], cpuMem);
+		binding.SynchronizeInputs();
+		session_.Run(Ort::RunOptions{nullptr}, binding);
+		binding.SynchronizeOutputs();
+		return binding.GetOutputValues();
+	};
+
 	try {
-		return session_.Run(Ort::RunOptions{nullptr}, inNames.data(),
-				    inTensors.data(), inTensors.size(),
-				    outNames.data(), outNames.size());
+		return runBound();
 	} catch (...) {
 		if (!cuda_)
 			throw;
@@ -160,9 +175,7 @@ OrtModel::tryRun(std::vector<Ort::Value> &inTensors,
 					modelPath_.c_str(),
 					makeSessionOptions(intraOpThreads_,
 							   false));
-		return session_.Run(Ort::RunOptions{nullptr}, inNames.data(),
-				    inTensors.data(), inTensors.size(),
-				    outNames.data(), outNames.size());
+		return runBound();
 	}
 }
 
