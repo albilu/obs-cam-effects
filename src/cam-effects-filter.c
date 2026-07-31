@@ -340,26 +340,10 @@ static void cam_effects_get_defaults(obs_data_t *settings)
 	obs_data_set_default_double(settings, SETTING_MASK_TEMPORAL, 0.6);
 }
 
-static bool cam_effects_setting_changed(obs_properties_t *props,
-					obs_property_t *property,
-					obs_data_t *settings)
-{
-	UNUSED_PARAMETER(property);
-	struct cam_effects_filter *filter = obs_properties_get_param(props);
-	/* Apply immediately so the recomposed status reflects the new
-	 * state (update() is idempotent). */
-	if (filter)
-		cam_effects_update(filter, settings);
-	return true; /* rebuild the dialog -> fresh status line */
-}
-
 static obs_properties_t *cam_effects_properties(void *data)
 {
 	struct cam_effects_filter *filter = data;
 	obs_properties_t *props = obs_properties_create();
-
-	/* Needed by cam_effects_setting_changed() to retrieve the filter. */
-	obs_properties_set_param(props, filter, NULL);
 
 	obs_property_t *mode = obs_properties_add_list(
 		props, SETTING_MODE, "Background", OBS_COMBO_TYPE_LIST,
@@ -368,7 +352,6 @@ static obs_properties_t *cam_effects_properties(void *data)
 	obs_property_list_add_string(mode, "Transparent", "transparent");
 	obs_property_list_add_string(mode, "Replace with image", "image");
 	obs_property_list_add_string(mode, "Blur", "blur");
-	obs_property_set_modified_callback(mode, cam_effects_setting_changed);
 
 	obs_properties_add_path(props, SETTING_IMAGE_PATH, "Background image",
 				OBS_PATH_FILE,
@@ -384,7 +367,6 @@ static obs_properties_t *cam_effects_properties(void *data)
 	obs_property_list_add_string(tier, "Standard", "standard");
 	obs_property_list_add_string(tier, "Quality (downloaded model)",
 				     "quality");
-	obs_property_set_modified_callback(tier, cam_effects_setting_changed);
 
 	obs_properties_add_float_slider(props, SETTING_MASK_THRESHOLD,
 					"Mask threshold", 0.0, 1.0, 0.01);
