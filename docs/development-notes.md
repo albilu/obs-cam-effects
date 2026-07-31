@@ -75,3 +75,37 @@ merge against this base.
     - get_name hardcodes "Camera Effects"; locale Name= key unused.
     - mask_tex is hard-coded 192x192 and would silently keep a stale mask
       if a future model's mask size differs — revisit with RVM tier.
+
+## Plan 3 state (model manager + quality tier)
+
+- Tier picker: Auto / Lite (MediaPipe 256x256, bundled) / Standard
+  (PP-HumanSeg, bundled) / Quality (RVM, runtime download w/ GPL notice).
+  Auto = Quality if downloaded, else Standard. Worker hot-swap via
+  setProcessor (no filter recreation on tier change).
+- RVM: recurrent states, ~17.7ms/frame (57fps) on CPU. PP-HumanSeg
+  6.3ms (154fps). Benchmarks on this machine (RTX 5070 present).
+- Model manager: curl subprocess + sha256sum + tar extract (staged,
+  atomic dir swap); manifest in data/models/manifest.json; cache
+  ~/.config/obs-cam-effects/{models,providers}.
+- Advanced mask settings (amendment 9): threshold / contour / feather /
+  temporal smoothing, all wired through the pipeline.
+- Status line: composed at dialog open (get_properties) + Refresh
+  button; shows active model, tier setting, model state, download state,
+  backend, fps. fps counter verified live (29-35fps with camera running).
+- CUDA: provider package (240MB, MIT) downloads + registers on RTX 5070
+  via ORT 1.28 plugin-EP API. HOWEVER: actual GPU inference fails on
+  this machine — cuDNN FE HEURISTIC_QUERY_FAILED on Blackwell sm_120
+  with a hand-assembled CUDA 13.3 runtime (deb-extracted, no proper
+  toolkit). Judged environment, not code. Lazy CPU fallback (added
+  beyond plan): first CUDA run failure permanently degrades the session
+  to CPU — users with broken CUDA get CPU speed, never a crash.
+  CUDA runtime requirement for users: CUDA 13 toolkit + cuDNN on the
+  loader path (the 240MB ORT provider package alone is NOT enough).
+- Follow-ups:
+  - Surface ORT/cuDNN error text through EpProbe to the status line
+    (currently catch(...) swallows the reason).
+  - Rvm test depends on a manually staged model file in
+    build_x86_64/models (not CMake-downloaded) — re-stage after wiping
+    the build dir.
+  - fpsLast cross-thread read is benign-on-x86 but non-atomic.
+  - blur_strength plain int cross-thread (carried from Plan 2 notes).
