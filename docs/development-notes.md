@@ -93,14 +93,20 @@ merge against this base.
   button; shows active model, tier setting, model state, download state,
   backend, fps. fps counter verified live (29-35fps with camera running).
 - CUDA: provider package (240MB, MIT) downloads + registers on RTX 5070
-  via ORT 1.28 plugin-EP API. HOWEVER: actual GPU inference fails on
-  this machine — cuDNN FE HEURISTIC_QUERY_FAILED on Blackwell sm_120
-  with a hand-assembled CUDA 13.3 runtime (deb-extracted, no proper
-  toolkit). Judged environment, not code. Lazy CPU fallback (added
-  beyond plan): first CUDA run failure permanently degrades the session
-  to CPU — users with broken CUDA get CPU speed, never a crash.
-  CUDA runtime requirement for users: CUDA 13 toolkit + cuDNN on the
-  loader path (the 240MB ORT provider package alone is NOT enough).
+  via ORT 1.28 plugin-EP API. RESOLVED 2026-07-30 after installing
+  cudnn9-cuda-13 (9.24) + CUDA 13.3 runtime libs: **CUDA inference works
+  for PP-HumanSeg (2.05ms, 488fps — 3x CPU) and MediaPipe (1.96ms,
+  511fps)**. Two production fixes came out of it: (1) IoBinding —
+  raw Run() returns device-resident tensors on CUDA; host deref
+  segfaulted, now outputs are bound to CPU memory so ORT copies back;
+  (2) RVM pinned to CPU — the ORT 1.28 CUDA EP hard-segfaults on RVM's
+  dynamic 6-in/6-out graph on Blackwell sm_120 (uncatchable; lazy
+  fallback can't help; CPU is 57fps anyway). Re-test RVM on CUDA after
+  ORT/cuDNN updates.
+- CUDA runtime requirement for users: CUDA 13 runtime (cudart/cublas/
+  curand) + cuDNN 9 on the loader path. The 240MB ORT provider package
+  alone is NOT enough. On this machine the runtime lives extracted at
+  ~/.local/lib/cuda13 (needs LD_LIBRARY_PATH for OBS to use CUDA).
 - Follow-ups:
   - Surface ORT/cuDNN error text through EpProbe to the status line
     (currently catch(...) swallows the reason).
