@@ -8,9 +8,17 @@ namespace fx {
 
 Rvm::Rvm(const std::string &modelPath, int threads,
 	 const std::string &providersDir)
-	: model_(modelPath, threads, providersDir),
-	  tensor_(3 * kSize * kSize)
+	: model_(modelPath, threads, ""), tensor_(3 * kSize * kSize)
 {
+	/* RVM is pinned to CPU regardless of providersDir: the ORT 1.28
+	 * CUDA EP segfaults (not an exception — uncatchable) executing
+	 * this model's dynamic 6-in/6-out graph on a Blackwell (sm_120)
+	 * GPU. Verified 2026-07-30 on RTX 5070 / driver 580.126.09 /
+	 * cuDNN 9.24: PP-HumanSeg and MediaPipe run fine on the same
+	 * CUDA EP, RVM crashes inside libonnxruntime during Run().
+	 * CPU is ~17ms/frame (57fps) — plenty. Re-test before re-enabling
+	 * (drop the "" override and re-run the RVM bench). */
+	(void)providersDir;
 	if (model_.inputCount() != 6 || model_.outputCount() != 6)
 		throw std::runtime_error("fx: unexpected RVM IO count");
 
