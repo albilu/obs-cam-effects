@@ -159,12 +159,17 @@ static void cam_effects_destroy(void *data)
 }
 
 /* Composes the status line shown in the properties dialog. Called from
- * update() and the download-button callbacks; the dialog picks the text
- * up when (re)opened — OBS properties are static while open. */
+ * update(), from properties() itself (OBS calls get_properties every
+ * time the dialog opens) and from the button callbacks; the dialog
+ * picks the text up when (re)opened — OBS properties are static while
+ * open. */
 static void cam_effects_compose_status(struct cam_effects_filter *filter)
 {
-	static const char *tier_names[] = {"auto", "lite", "standard",
-					   "quality"};
+	static const char *active_names[] = {
+		"unknown", "Lite (MediaPipe)", "Standard (PP-HumanSeg)",
+		"Quality (RVM MobileNetV3)"};
+	static const char *setting_names[] = {"Auto", "Lite", "Standard",
+					      "Quality"};
 	if (!filter->fx) {
 		snprintf(filter->status, sizeof(filter->status),
 			 "Engine not started (select a background mode).");
@@ -172,10 +177,10 @@ static void cam_effects_compose_status(struct cam_effects_filter *filter)
 	}
 	int eff = cam_fx_tier_in_effect(filter->fx);
 	const char *eff_name =
-		(eff >= 1 && eff <= 3) ? tier_names[eff] : "unknown";
+		(eff >= 1 && eff <= 3) ? active_names[eff] : "unknown";
 	int req = filter->tier;
 	const char *req_name =
-		(req >= 0 && req <= 3) ? tier_names[req] : "auto";
+		(req >= 0 && req <= 3) ? setting_names[req] : "Auto";
 
 	char dl_state[32] = {0};
 	double dl_prog = -1.0;
@@ -192,13 +197,24 @@ static void cam_effects_compose_status(struct cam_effects_filter *filter)
 	char backend[16] = "CPU";
 	cam_fx_backend(filter->fx, backend, sizeof(backend));
 
+	/* fps is meaningful only while masks flow: show "warming up…"
+	 * before the first mask and "—" once the stream goes stale. */
+	char fps_text[32];
+	if (cam_fx_is_fresh(filter->fx, 2000))
+		snprintf(fps_text, sizeof(fps_text), "%llu fps",
+			 (unsigned long long)cam_fx_fps(filter->fx));
+	else if (cam_fx_has_mask(filter->fx))
+		snprintf(fps_text, sizeof(fps_text), "—");
+	else
+		snprintf(fps_text, sizeof(fps_text), "warming up…");
+
 	snprintf(filter->status, sizeof(filter->status),
-		 "Tier: %s (selected: %s) | Quality model: %s | Download: "
-		 "%s | Backend: %s | %llu fps",
+		 "Active model: %s — tier setting: %s | Quality model: %s | "
+		 "Download: %s | Backend: %s | %s",
 		 eff_name, req_name,
 		 cam_fx_quality_available(filter->fx) ? "downloaded"
 						      : "not downloaded",
-		 dl_text, backend, (unsigned long long)cam_fx_fps(filter->fx));
+		 dl_text, backend, fps_text);
 }
 
 static bool cam_effects_download_rvm_clicked(obs_properties_t *props,
@@ -227,6 +243,18 @@ static bool cam_effects_download_cuda_clicked(obs_properties_t *props,
 		cam_effects_compose_status(filter);
 	}
 	return true;
+}
+
+static bool cam_effects_refresh_status_clicked(obs_properties_t *props,
+					       obs_property_t *property,
+					       void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(property);
+	struct cam_effects_filter *filter = data;
+	if (filter)
+		cam_effects_compose_status(filter);
+	return true; /* refresh properties (status shows new state) */
 }
 
 static void cam_effects_update(void *data, obs_data_t *settings)
@@ -389,10 +417,21 @@ static obs_properties_t *cam_effects_properties(void *data)
 		"Download GPU acceleration (MIT, ~240 MB)",
 		cam_effects_download_cuda_clicked);
 
+	/* OBS calls get_properties every time the properties dialog
+	 * opens: recompose the status from live bridge state so the
+	 * dialog never shows a stale creation-time snapshot (fps is
+	 * legitimately 0 at creation). */
+	if (filter)
+		cam_effects_compose_status(filter);
 	const char *status = (filter && filter->status[0])
 				     ? filter->status
 				     : "Status unavailable";
-	obs_properties_add_text(props, SETTING_STATUS, status, OBS_TEXT_INFO);
+	obs_property_t *status_prop = obs_properties_add_text(
+		props, SETTING_STATUS, status, OBS_TEXT_INFO);
+	obs_property_set_description(status_prop, status);
+	obs_properties_add_button(props, "refresh_status_btn",
+				  "⟳ Refresh status",
+				  cam_effects_refresh_status_clicked);
 	return props;
 }
 

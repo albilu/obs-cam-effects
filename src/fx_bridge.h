@@ -31,6 +31,9 @@ int cam_fx_try_get_mask(cam_fx_t *fx, const uint8_t **px, int *w, int *h,
 /* 1 if a mask was published within max_age_ms, else 0. */
 int cam_fx_is_fresh(cam_fx_t *fx, uint64_t max_age_ms);
 
+/* 1 if at least one mask has been published since start, else 0. */
+int cam_fx_has_mask(cam_fx_t *fx);
+
 /* Tier: 0=auto, 1=lite, 2=standard, 3=quality. Cheap and idempotent:
  * rebuilds and hot-swaps the pipeline only when the resolved tier
  * changes (auto resolves to quality once the file is downloaded). */

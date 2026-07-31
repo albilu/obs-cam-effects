@@ -322,6 +322,14 @@ int cam_fx_is_fresh(cam_fx_t *fx, uint64_t max_age_ms)
 	return fx->worker->isFresh(max_age_ms) ? 1 : 0;
 }
 
+int cam_fx_has_mask(cam_fx_t *fx)
+{
+	if (!fx)
+		return 0;
+	uint64_t s = 0;
+	return fx->worker->tryGetLatest(s) ? 1 : 0;
+}
+
 void cam_fx_set_tier(cam_fx_t *fx, int tier)
 {
 	fx::SegTier resolved = resolveTier(tier, fx->qualityPath);
