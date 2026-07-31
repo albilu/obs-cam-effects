@@ -60,6 +60,9 @@ int cam_fx_start_download(cam_fx_t *fx, const char *id);
 int cam_fx_download_state(cam_fx_t *fx, char *buf, int buf_len,
 			  double *progress);
 
+/* Download error text (empty unless state == error). Returns 0. */
+int cam_fx_download_error(cam_fx_t *fx, char *buf, int buf_len);
+
 /* License/notice text for a manifest entry id (empty if unknown).
  * Returns 0 on success, -1 if the id is unknown. */
 int cam_fx_notice(cam_fx_t *fx, const char *id, char *buf, int buf_len);

@@ -121,7 +121,12 @@ void Downloader::run(DownloadRequest req)
 	};
 
 	std::string part = req.destPath + ".part";
-	std::string cmd = "curl -fSL -C - -o " + shellQuote(part) + " " +
+	/* Stall + total timeouts bound the dtor hang (cancel is only
+	 * checked after curl exits): abort when <1KB/s for 30s, hard cap
+	 * 30min for the 240MB provider on slow links. A true
+	 * kill-on-cancel (fork/exec + kill) is a follow-up. */
+	std::string cmd = "curl -fSL -C - --speed-time 30 --speed-limit 1024 "
+			  "-m 1800 -o " + shellQuote(part) + " " +
 			  shellQuote(req.url) + " 2>/dev/null";
 	int rc = runCmd(cmd);
 	if (cancel_.load()) {

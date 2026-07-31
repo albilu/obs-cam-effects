@@ -109,3 +109,18 @@ merge against this base.
     the build dir.
   - fpsLast cross-thread read is benign-on-x86 but non-atomic.
   - blur_strength plain int cross-thread (carried from Plan 2 notes).
+  - Downloader cancel is only checked after curl exits (bounded to ≤30s
+    stall by --speed-time/--limit + 30min cap); true kill-on-cancel
+    (fork/exec + kill) is a follow-up.
+  - CUDA does not auto-activate when the provider download completes
+    in-session — requires a tier toggle or OBS restart (probe is
+    once-latched by design).
+  - OrtModel::cuda_ flag: worker-thread write / UI-thread read (benign
+    on x86, same class as fpsLast).
+  - Spec drift to reconcile at next spec revision: §7.1 Auto rule says
+    "usable GPU EP" but shipped Auto = Quality when RVM exists regardless
+    of GPU (CPU-viable, deliberate); §7.3 says HuggingFace but shipped
+    downloads use GitHub raw/releases; §7.3 "consent dialog" shipped as
+    persistent license notice + click-to-download.
+  - mask threshold binarize has no direct unit test (contour/feather/EMA
+    do); trivial code, user-verified.

@@ -379,6 +379,11 @@ int cam_fx_start_download(cam_fx_t *fx, const char *id)
 	req.sha256 = entry->sha256;
 	req.expectedSize = entry->size;
 	if (entry->kind == "provider") {
+		/* A provider without an extract list would download a
+		 * useless 240MB tgz and report Done (manifest formatting
+		 * drift) — refuse. */
+		if (entry->extract.empty())
+			return -1;
 		req.destPath = cacheDir("providers") + "/" + entry->id + ".tgz";
 		req.extractMembers = entry->extract;
 		req.extractDestDir = cacheDir("providers");
@@ -408,6 +413,16 @@ int cam_fx_download_state(cam_fx_t *fx, char *buf, int buf_len,
 			 fx::models_dl::stateName(fx->downloader->state()));
 	if (progress)
 		*progress = fx->downloader->progress();
+	return 0;
+}
+
+int cam_fx_download_error(cam_fx_t *fx, char *buf, int buf_len)
+{
+	if (!fx)
+		return -1;
+	if (buf && buf_len > 0)
+		snprintf(buf, (size_t)buf_len, "%s",
+			 fx->downloader->error().c_str());
 	return 0;
 }
 

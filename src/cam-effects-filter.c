@@ -186,11 +186,16 @@ static void cam_effects_compose_status(struct cam_effects_filter *filter)
 	double dl_prog = -1.0;
 	cam_fx_download_state(filter->fx, dl_state, sizeof(dl_state),
 			      &dl_prog);
-	char dl_text[96];
+	char dl_text[192];
 	if (strcmp(dl_state, "downloading") == 0 && dl_prog >= 0.0)
 		snprintf(dl_text, sizeof(dl_text), "downloading %.0f%%",
 			 dl_prog * 100.0);
-	else
+	else if (strcmp(dl_state, "error") == 0) {
+		char dl_err[128] = {0};
+		cam_fx_download_error(filter->fx, dl_err, sizeof(dl_err));
+		snprintf(dl_text, sizeof(dl_text), "error: %s",
+			 dl_err[0] ? dl_err : "unknown");
+	} else
 		snprintf(dl_text, sizeof(dl_text), "%s",
 			 dl_state[0] ? dl_state : "idle");
 
