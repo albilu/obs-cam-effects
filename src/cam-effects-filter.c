@@ -165,17 +165,11 @@ static void cam_effects_destroy(void *data)
  * open. */
 static void cam_effects_compose_status(struct cam_effects_filter *filter)
 {
-	static const char *active_names[] = {
-		"unknown", "Lite (MediaPipe)", "Standard (PP-HumanSeg)",
-		"Quality (RVM MobileNetV3)"};
 	if (!filter->fx) {
 		snprintf(filter->status, sizeof(filter->status),
 			 "Engine not started (select a background mode).");
 		return;
 	}
-	int eff = cam_fx_tier_in_effect(filter->fx);
-	const char *eff_name =
-		(eff >= 1 && eff <= 3) ? active_names[eff] : "unknown";
 
 	char dl_state[32] = {0};
 	double dl_prog = -1.0;
@@ -209,9 +203,7 @@ static void cam_effects_compose_status(struct cam_effects_filter *filter)
 		snprintf(fps_text, sizeof(fps_text), "warming up…");
 
 	snprintf(filter->status, sizeof(filter->status),
-		 "Active model: %s | Quality model: %s | Download: %s | "
-		 "Backend: %s | %s",
-		 eff_name,
+		 "Quality model: %s | Download: %s | Backend: %s | %s",
 		 cam_fx_quality_available(filter->fx) ? "downloaded"
 						      : "not downloaded",
 		 dl_text, backend, fps_text);
@@ -363,9 +355,12 @@ static obs_properties_t *cam_effects_properties(void *data)
 		props, SETTING_TIER, "Segmentation model",
 		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(tier, "Auto (recommended)", "auto");
-	obs_property_list_add_string(tier, "Lite (fastest)", "lite");
-	obs_property_list_add_string(tier, "Standard", "standard");
-	obs_property_list_add_string(tier, "Quality (downloaded model)",
+	obs_property_list_add_string(tier, "Lite (MediaPipe - fastest)",
+				     "lite");
+	obs_property_list_add_string(tier,
+				     "Standard (PP-HumanSeg - balanced)",
+				     "standard");
+	obs_property_list_add_string(tier, "Quality (RVM - best edges)",
 				     "quality");
 
 	obs_properties_add_float_slider(props, SETTING_MASK_THRESHOLD,
