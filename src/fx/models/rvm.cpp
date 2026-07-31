@@ -4,20 +4,50 @@
 #include <cmath>
 #include <stdexcept>
 
+/* ============================ KNOWN BUGS ============================
+ *
+ * BUG-1 (Critical, worked around): ORT 1.28 CUDA EP hard-segfaults
+ *   executing this model on Blackwell (sm_120) GPUs.
+ *     - Symptom: uncatchable SIGSEGV inside libonnxruntime during
+ *       session Run(). NOT a C++ exception, so OrtModel::tryRun's lazy
+ *       CPU fallback CANNOT cover it — the whole OBS process dies.
+ *     - Verified: 2026-07-30, RTX 5070 (sm_120), driver 580.126.09,
+ *       cuDNN 9.24, onnxruntime-linux-x64-gpu_cuda13-1.28.0.tgz.
+ *       PP-HumanSeg and MediaPipe run FINE on the same EP (simple
+ *       static-IO graphs); RVM's dynamic 6-in/6-out graph crashes.
+ *     - Root cause (upstream): prebuilt ORT CUDA packages ship
+ *       incomplete sm_120 kernel coverage — microsoft/onnxruntime
+ *       issue #26177. Community fix is building ORT from source with
+ *       CMAKE_CUDA_ARCHITECTURES=120 (confirmed working on RTX 5070 Ti
+ *       with ORT 1.24.2). NOT system-specific; no prebuilt ORT version
+ *       (older or newer) is known to work for this graph on sm_120.
+ *     - Workaround: ctor pins the model to CPU (~17ms/frame, 57fps).
+ *     - Re-enable procedure: after an ORT/cuDNN bump, drop the ""
+ *       providersDir override in the ctor and re-run the RVM CUDA
+ *       bench (100 frames at 192x192, watch for SIGSEGV).
+ *
+ * BUG-2 (Test infra): tests/test_rvm.cpp needs the RVM model file at
+ *   build_x86_64/models/rvm_mobilenetv3_fp32.onnx, but that file is a
+ *   RUNTIME download (not CMake-fetched) and is wiped when the build
+ *   dir is deleted. The test GTEST_SKIPs gracefully when absent.
+ *   Re-stage with: cp ~/.config/obs-cam-effects/models/rvm_mobilenetv3_fp32.onnx build_x86_64/models/
+ *
+ * BUG-3 (Perf, minor): the fgr output (foreground RGB, [1,3,192,192])
+ *   is computed and copied to host every inference, then discarded —
+ *   ~432KB/frame of pointless copy (OrtModel::runImpl copies ALL
+ *   outputs out unconditionally). Harmless at 192x192 (~2-3% of the
+ *   frame budget); fix with an output allowlist if it ever matters.
+ * ================================================================== */
+
 namespace fx {
 
 Rvm::Rvm(const std::string &modelPath, int threads,
 	 const std::string &providersDir)
 	: model_(modelPath, threads, ""), tensor_(3 * kSize * kSize)
 {
-	/* RVM is pinned to CPU regardless of providersDir: the ORT 1.28
-	 * CUDA EP segfaults (not an exception — uncatchable) executing
-	 * this model's dynamic 6-in/6-out graph on a Blackwell (sm_120)
-	 * GPU. Verified 2026-07-30 on RTX 5070 / driver 580.126.09 /
-	 * cuDNN 9.24: PP-HumanSeg and MediaPipe run fine on the same
-	 * CUDA EP, RVM crashes inside libonnxruntime during Run().
-	 * CPU is ~17ms/frame (57fps) — plenty. Re-test before re-enabling
-	 * (drop the "" override and re-run the RVM bench). */
+	/* CPU pin — see KNOWN BUGS / BUG-1 at the top of this file.
+	 * providersDir is deliberately ignored until the ORT CUDA EP can
+	 * execute this graph on Blackwell without segfaulting. */
 	(void)providersDir;
 	if (model_.inputCount() != 6 || model_.outputCount() != 6)
 		throw std::runtime_error("fx: unexpected RVM IO count");
