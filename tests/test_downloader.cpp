@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <sys/stat.h>
 #include <thread>
 
 using namespace std::chrono_literals;
@@ -164,6 +165,74 @@ TEST(Downloader, StripComponentsLandsFlat)
 	ASSERT_EQ(content, "payload");
 	std::ifstream nested(outDir + "/pkg/file.txt");
 	ASSERT_FALSE(nested.is_open());
+}
+
+TEST(Downloader, ExtractSwapIsAtomicIsh)
+{
+	std::system("mkdir -p /tmp/opencode");
+	/* Own fixture (no cross-test dependency): root/pkg/file.txt. */
+	std::string root = tmpPath("swapsrc");
+	std::string mk = "mkdir -p " + root + "/pkg && printf payload > " +
+			 root + "/pkg/file.txt && tar czf " +
+			 tmpPath("swap.tgz") + " -C " + root + " .";
+	ASSERT_EQ(std::system(mk.c_str()), 0);
+	std::string dst = tmpPath("swap-dl.tgz");
+	std::remove(dst.c_str());
+	std::remove((dst + ".part").c_str());
+	std::string outDir = tmpPath("swapout");
+	/* Pre-existing live dir with a sentinel: the swap replaces the
+	 * whole dir, so the sentinel is EXPECTED to be gone afterwards. */
+	std::string pre = "rm -rf " + outDir + " " + outDir + ".staging " +
+			  outDir + ".old && mkdir -p " + outDir +
+			  " && printf old > " + outDir + "/keep_old.txt";
+	ASSERT_EQ(std::system(pre.c_str()), 0);
+
+	Downloader d;
+	fx::models_dl::DownloadRequest req;
+	req.url = "file://" + tmpPath("swap.tgz");
+	req.destPath = dst;
+	req.sha256 = sha256Of(tmpPath("swap.tgz"));
+	req.extractMembers = {"./pkg/file.txt"};
+	req.extractDestDir = outDir;
+	d.start(req);
+
+	ASSERT_TRUE(waitDone(d, 10000));
+	ASSERT_EQ(d.state(), State::Done) << d.error();
+
+	struct stat st;
+	/* (a) extracted member exists at the new location. */
+	std::ifstream f(outDir + "/pkg/file.txt");
+	std::string content((std::istreambuf_iterator<char>(f)),
+			    std::istreambuf_iterator<char>());
+	ASSERT_EQ(content, "payload");
+	/* (b) no staging/.old leftovers. */
+	ASSERT_NE(stat((outDir + ".staging").c_str(), &st), 0);
+	ASSERT_NE(stat((outDir + ".old").c_str(), &st), 0);
+	/* Sentinel from the replaced dir is gone (clean swap). */
+	ASSERT_NE(stat((outDir + "/keep_old.txt").c_str(), &st), 0);
+
+	/* (c) swap-over-swap: a second download+swap also succeeds. */
+	std::string root2 = tmpPath("swapsrc2");
+	std::string mk2 = "mkdir -p " + root2 + "/pkg && printf payload2 > " +
+			  root2 + "/pkg/file.txt && tar czf " +
+			  tmpPath("swap2.tgz") + " -C " + root2 + " .";
+	ASSERT_EQ(std::system(mk2.c_str()), 0);
+	std::string dst2 = tmpPath("swap-dl2.tgz");
+	std::remove(dst2.c_str());
+	std::remove((dst2 + ".part").c_str());
+	req.url = "file://" + tmpPath("swap2.tgz");
+	req.destPath = dst2;
+	req.sha256 = sha256Of(tmpPath("swap2.tgz"));
+	d.start(req);
+
+	ASSERT_TRUE(waitDone(d, 10000));
+	ASSERT_EQ(d.state(), State::Done) << d.error();
+	std::ifstream f2(outDir + "/pkg/file.txt");
+	std::string content2((std::istreambuf_iterator<char>(f2)),
+			     std::istreambuf_iterator<char>());
+	ASSERT_EQ(content2, "payload2");
+	ASSERT_NE(stat((outDir + ".staging").c_str(), &st), 0);
+	ASSERT_NE(stat((outDir + ".old").c_str(), &st), 0);
 }
 
 TEST(Downloader, RestartAfterDoneWorks)

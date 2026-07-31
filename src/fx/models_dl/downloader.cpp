@@ -160,14 +160,23 @@ void Downloader::run(DownloadRequest req)
 
 	if (!req.extractMembers.empty()) {
 		state_.store(State::Extracting);
-		std::string mk = "mkdir -p " + shellQuote(req.extractDestDir);
-		rc = runCmd(mk);
+		/* Stage into a sibling dir, then swap it into place:
+		 * rename() of a directory is atomic on the same filesystem
+		 * (staging/old are siblings of extractDestDir, so same
+		 * fs), and a killed process never leaves a truncated
+		 * extraction inside the live extractDestDir. */
+		std::string staging = req.extractDestDir + ".staging";
+		std::string oldDir = req.extractDestDir + ".old";
+		rc = runCmd("rm -rf " + shellQuote(staging));
+		if (rc == 0)
+			rc = runCmd("mkdir -p " + shellQuote(staging));
 		if (rc != 0) {
-			fail("mkdir failed with exit code " + std::to_string(rc));
+			fail("staging mkdir failed with exit code " +
+			     std::to_string(rc));
 			return;
 		}
 		std::string tar = "tar xzf " + shellQuote(part) + " -C " +
-				  shellQuote(req.extractDestDir);
+				  shellQuote(staging);
 		if (req.stripComponents > 0)
 			tar += " --strip-components=" +
 			       std::to_string(req.stripComponents);
@@ -175,11 +184,27 @@ void Downloader::run(DownloadRequest req)
 			tar += " " + shellQuote(m);
 		rc = runCmd(tar);
 		if (rc != 0) {
+			runCmd("rm -rf " + shellQuote(staging));
 			fail("tar extract failed with exit code " +
 			     std::to_string(rc));
 			return;
 		}
 		std::remove(part.c_str());
+
+		/* Swap: move any existing live dir aside, move staging in,
+		 * restore the old dir if the swap fails. */
+		runCmd("rm -rf " + shellQuote(oldDir));
+		struct stat st;
+		if (stat(req.extractDestDir.c_str(), &st) == 0)
+			std::rename(req.extractDestDir.c_str(),
+				    oldDir.c_str());
+		if (std::rename(staging.c_str(), req.extractDestDir.c_str()) !=
+		    0) {
+			std::rename(oldDir.c_str(), req.extractDestDir.c_str());
+			fail("staging swap failed");
+			return;
+		}
+		runCmd("rm -rf " + shellQuote(oldDir));
 	} else {
 		if (std::rename(part.c_str(), req.destPath.c_str()) != 0) {
 			std::remove(part.c_str());
