@@ -238,7 +238,7 @@ Implementation requirements (write the full implementation; these are the critic
 - `warpAffineBilinear`: compute `inv = invertAffine(forwardM)` once; for each dst pixel: srcX = inv.m[0]·x + inv.m[1]·y + inv.m[2], srcY = inv.m[3]·x + inv.m[4]·y + inv.m[5]; bilinear sample with edge clamp; zero when the source point is outside (use clamp, not zero-fill — OpenCV borderValue=0 for out-of-bounds; clamp matches for our use and is safer for ellipse edges).
 - `ellipseMask`: normalized ellipse equation ((x−c)/(rx·s))² + ((y−c)/(ry·s))²; 1 inside, 0 outside, linear feather across `feather` px at the boundary; then a light box blur over the feather band.
 - `restoreMouthRegion`: ellipse centered at the midpoint of mouthL/mouthR, rx = |mouthR−mouthL|·widthScale·0.75, ry = rx·0.5; alpha = feathered ellipse; img = orig·α + img·(1−α) inside.
-- `stampWatermarkAI`: hardcoded 5×7 bitmaps for 'A' and 'I' (plus a filled box behind); scale ≈ h/28, alpha ≈ 0.8, margin ≈ h/40 from the corner.
+- `stampWatermarkAI`: hardcoded 5×7 bitmaps for 'A' and 'I' (plus a filled box behind); scale ≈ h/270 (~2.5% of frame width), alpha ≈ 0.8, margin ≈ h/40 from the corner.
 
 - [ ] **Step 5: Build + test — all pass; commit**
 

@@ -28,7 +28,8 @@ Affine23 invertAffine(const Affine23 &m);
 
 /* Bilinear warp of an interleaved-uint8 BGR(A) image.
  * dst(x,y) = src(M⁻¹ · (x,y)) — caller passes the FORWARD transform.
- * Channels: 3 (BGR) or 4 (BGRA). Out-of-bounds samples are zero. */
+ * Channels: 3 (BGR) or 4 (BGRA). Out-of-bounds samples are clamped to
+ * the edge pixel. */
 void warpAffineBilinear(const uint8_t *src, int sw, int sh, int channels,
 			const Affine23 &forwardM, uint8_t *dst, int dw,
 			int dh);
