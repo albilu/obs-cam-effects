@@ -88,6 +88,7 @@ add_library(fx STATIC
   src/fx/version.cpp
   src/fx/engine/ep_probe.cpp
   src/fx/engine/ort_backend.cpp
+  src/fx/image/align.cpp
   src/fx/image/ops.cpp
   src/fx/models/pp_humanseg.cpp
   src/fx/models/mediapipe_lite.cpp
@@ -125,6 +126,7 @@ if(BUILD_TESTING)
 
   include(GoogleTest)
   add_executable(fx_tests
+    tests/test_align.cpp
     tests/test_version.cpp
     tests/test_ort_backend.cpp
     tests/test_image_ops.cpp
