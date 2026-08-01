@@ -126,11 +126,18 @@ std::vector<float> onnxLastInitializerFloats(const std::string &modelPath,
 		if (field == 1 && wt == 0) {
 			dimsProduct *= (int64_t)last.varint();
 			sawDims = true;
+			if (dimsProduct < 0 || dimsProduct > expectedCount)
+				throw std::runtime_error(
+					"fx: initializer dims overflow");
 		} else if (field == 1 && wt == 2) {
 			Cursor packed = last.bytes(last.varint());
 			while (packed.p < packed.end) {
 				dimsProduct *= (int64_t)packed.varint();
 				sawDims = true;
+				if (dimsProduct < 0 ||
+				    dimsProduct > expectedCount)
+					throw std::runtime_error(
+						"fx: initializer dims overflow");
 			}
 		} else if (field == 2 && wt == 0) {
 			dataType = (int64_t)last.varint();
