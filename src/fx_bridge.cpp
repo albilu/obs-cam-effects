@@ -154,7 +154,9 @@ bool buildAndSwap(cam_fx *fx, fx::SegTier tier)
 		if (fx->worker) {
 			fx::Worker::Processor proc =
 				[p](const fx::Frame &frame) {
-					return p->process(frame);
+					fx::WorkerResult r;
+					r.mask = p->process(frame);
+					return r;
 				};
 			fx->worker->setProcessor(std::move(proc));
 		}
@@ -246,7 +248,11 @@ cam_fx_t *cam_fx_create(const char *lite_path, const char *standard_path,
 			return nullptr;
 		std::shared_ptr<fx::SegmentationPipeline> p = fx->pipeline;
 		fx->worker = std::make_unique<fx::Worker>(
-			[p](const fx::Frame &f) { return p->process(f); });
+			[p](const fx::Frame &f) {
+				fx::WorkerResult r;
+				r.mask = p->process(f);
+				return r;
+			});
 		fx->worker->start();
 		return fx.release();
 	} catch (...) {
@@ -276,7 +282,7 @@ int cam_fx_try_get_mask(cam_fx_t *fx, const uint8_t **px, int *w, int *h,
 			uint64_t *seq)
 {
 	uint64_t s = 0;
-	auto m = fx->worker->tryGetLatest(s);
+	auto m = fx->worker->tryGetLatestMask(s);
 	if (!m)
 		return 0;
 	if (s != fx->seenSeq) {
@@ -327,7 +333,7 @@ int cam_fx_has_mask(cam_fx_t *fx)
 	if (!fx)
 		return 0;
 	uint64_t s = 0;
-	return fx->worker->tryGetLatest(s) ? 1 : 0;
+	return fx->worker->tryGetLatestMask(s) ? 1 : 0;
 }
 
 void cam_fx_set_tier(cam_fx_t *fx, int tier)
@@ -456,6 +462,27 @@ int cam_fx_backend(cam_fx_t *fx, char *buf, int buf_len)
 		snprintf(buf, (size_t)buf_len, "%s",
 			 fx::EpProbe::backendName(fx->pipeline &&
 						  fx->pipeline->usesCuda()));
+	return 0;
+}
+
+/* Face swap stubs — Task 7 wires these into the filter. */
+int cam_fx_faceswap_available(cam_fx_t *)
+{
+	return 0;
+}
+
+int cam_fx_faceswap_set_source(cam_fx_t *, const char *)
+{
+	return -1;
+}
+
+void cam_fx_faceswap_set_params(cam_fx_t *, float, float, int, int)
+{
+}
+
+int cam_fx_try_get_frame(cam_fx_t *, const uint8_t **, int *, int *,
+			 uint64_t *)
+{
 	return 0;
 }
 

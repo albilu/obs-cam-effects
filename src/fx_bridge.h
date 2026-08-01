@@ -74,6 +74,15 @@ uint64_t cam_fx_fps(cam_fx_t *fx);
  * Returns 0 on success, -1 on NULL fx. */
 int cam_fx_backend(cam_fx_t *fx, char *buf, int buf_len);
 
+/* Face swap controls (Task 7 wires them into the filter). */
+int cam_fx_faceswap_available(cam_fx_t *fx); // 1 if models+CUDA ready
+int cam_fx_faceswap_set_source(cam_fx_t *fx, const char *image_path);
+void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity,
+				float sharpness, int preserve_mouth,
+				int watermark);
+int cam_fx_try_get_frame(cam_fx_t *fx, const uint8_t **bgra, int *w,
+			 int *h, uint64_t *seq);
+
 #ifdef __cplusplus
 }
 #endif

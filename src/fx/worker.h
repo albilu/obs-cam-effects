@@ -12,13 +12,20 @@
 
 namespace fx {
 
+/* Payload published by the worker: always a mask on success, plus a
+ * processed frame when the processor produces one (face swap), null
+ * otherwise (background-only). */
+struct WorkerResult {
+	std::shared_ptr<const Mask> mask;
+	std::shared_ptr<const Frame> frame; // may be null (background-only)
+};
+
 /* Single-worker latest-wins frame processor.
  * submit() never blocks: a still-pending frame is replaced by the newest.
- * tryGetLatest() returns the newest published mask (nullptr before first). */
+ * tryGetLatest() returns the newest published result (empty before first). */
 class Worker {
 public:
-	using Processor =
-		std::function<std::shared_ptr<Mask>(const Frame &)>;
+	using Processor = std::function<WorkerResult(const Frame &)>;
 
 	explicit Worker(Processor processor);
 	~Worker();
@@ -35,10 +42,13 @@ public:
 
 	void submit(std::shared_ptr<Frame> frame);
 
-	/* Latest published mask and its sequence (0 = none yet). */
-	std::shared_ptr<const Mask> tryGetLatest(uint64_t &seqOut) const;
+	/* Latest published result and its sequence (0 = none yet). */
+	WorkerResult tryGetLatest(uint64_t &seqOut) const;
 
-	/* True if a mask was published within maxAgeMs. */
+	/* Convenience: just the mask of the latest published result. */
+	std::shared_ptr<const Mask> tryGetLatestMask(uint64_t &seqOut) const;
+
+	/* True if a result was published within maxAgeMs. */
 	bool isFresh(uint64_t maxAgeMs) const;
 
 private:
@@ -53,7 +63,7 @@ private:
 	std::shared_ptr<Frame> pending_;
 
 	mutable std::mutex outM_;
-	std::shared_ptr<const Mask> latest_;
+	WorkerResult latest_;
 	uint64_t seq_ = 0;
 	std::atomic<int64_t> lastPublishMs_{0};
 };

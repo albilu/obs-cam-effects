@@ -55,11 +55,18 @@ void Worker::submit(std::shared_ptr<Frame> frame)
 	inCv_.notify_one();
 }
 
-std::shared_ptr<const Mask> Worker::tryGetLatest(uint64_t &seqOut) const
+WorkerResult Worker::tryGetLatest(uint64_t &seqOut) const
 {
 	std::lock_guard<std::mutex> lk(outM_);
 	seqOut = seq_;
 	return latest_;
+}
+
+std::shared_ptr<const Mask> Worker::tryGetLatestMask(uint64_t &seqOut) const
+{
+	std::lock_guard<std::mutex> lk(outM_);
+	seqOut = seq_;
+	return latest_.mask;
 }
 
 bool Worker::isFresh(uint64_t maxAgeMs) const
@@ -87,7 +94,7 @@ void Worker::loop()
 			 * copy keeps the old pipeline alive mid-call. */
 			processor = processor_;
 		}
-		std::shared_ptr<Mask> result;
+		WorkerResult result;
 		try {
 			result = processor(*frame);
 		} catch (...) {

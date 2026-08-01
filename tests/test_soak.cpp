@@ -18,9 +18,10 @@ TEST(Soak, ThroughputAndDropPolicy)
 				      FX_MODEL_PATH, "", 2);
 	std::atomic<uint64_t> processed{0};
 	fx::Worker w([&](const fx::Frame &f) {
-		auto m = pipe.process(f);
+		fx::WorkerResult r;
+		r.mask = pipe.process(f);
 		processed.fetch_add(1);
-		return m;
+		return r;
 	});
 	w.start();
 

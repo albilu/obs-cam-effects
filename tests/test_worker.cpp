@@ -23,11 +23,13 @@ static std::shared_ptr<fx::Frame> makeFrame(uint8_t v)
 TEST(Worker, ProcessesAndPublishesLatest)
 {
 	auto slow = [](const fx::Frame &) {
+		fx::WorkerResult r;
 		auto m = std::make_shared<fx::Mask>();
 		m->width = 2;
 		m->height = 2;
 		m->px = {0.5f, 0.5f, 0.5f, 0.5f};
-		return m;
+		r.mask = m;
+		return r;
 	};
 	fx::Worker w(slow);
 	w.start();
@@ -56,11 +58,13 @@ TEST(Worker, LatestWinsDropsStaleFrames)
 		lastSeen.store(f.bgra[0]);
 		if (n == 1)
 			gate.arrive_and_wait();
+		fx::WorkerResult r;
 		auto m = std::make_shared<fx::Mask>();
 		m->width = 1;
 		m->height = 1;
 		m->px = {1.0f};
-		return m;
+		r.mask = m;
+		return r;
 	};
 	fx::Worker w(blocking);
 	w.start();
@@ -81,7 +85,9 @@ TEST(Worker, LatestWinsDropsStaleFrames)
 TEST(Worker, StopIsIdempotent)
 {
 	auto fast = [](const fx::Frame &) {
-		return std::make_shared<fx::Mask>();
+		fx::WorkerResult r;
+		r.mask = std::make_shared<fx::Mask>();
+		return r;
 	};
 	fx::Worker w(fast);
 	w.start();
@@ -93,7 +99,7 @@ TEST(Worker, StopIsIdempotent)
 TEST(Worker, ProcessorThrowDoesNotCrash)
 {
 	std::atomic<int> calls{0};
-	auto throwing = [&](const fx::Frame &) -> std::shared_ptr<fx::Mask> {
+	auto throwing = [&](const fx::Frame &) -> fx::WorkerResult {
 		calls.fetch_add(1);
 		throw std::runtime_error("inference failed");
 	};
@@ -102,7 +108,7 @@ TEST(Worker, ProcessorThrowDoesNotCrash)
 	w.submit(makeFrame(1));
 	std::this_thread::sleep_for(50ms);
 	uint64_t seq = 42;
-	auto m = w.tryGetLatest(seq); // nothing published
+	auto m = w.tryGetLatestMask(seq); // nothing published
 	EXPECT_EQ(seq, 0u);
 	EXPECT_FALSE(w.isFresh(1000));
 	w.stop();
@@ -115,11 +121,13 @@ TEST(Worker, SetProcessorSwapsSafely)
 	std::atomic<int> which{0};
 	auto mk = [](int id) {
 		return [id](const fx::Frame &) {
+			fx::WorkerResult r;
 			auto m = std::make_shared<fx::Mask>();
 			m->width = 1;
 			m->height = 1;
 			m->px = {(float)id};
-			return m;
+			r.mask = m;
+			return r;
 		};
 	};
 	fx::Worker w(mk(1));
@@ -132,11 +140,48 @@ TEST(Worker, SetProcessorSwapsSafely)
 	std::shared_ptr<const fx::Mask> m;
 	for (int i = 0; i < 100 && seq == 0; i++) {
 		std::this_thread::sleep_for(5ms);
-		m = w.tryGetLatest(seq);
+		m = w.tryGetLatestMask(seq);
 	}
 	w.stop();
 	ASSERT_EQ(seq, 1u);
 	ASSERT_FLOAT_EQ(m->px[0], 2.0f);
+}
+
+TEST(Worker, PublishesFrameAndMaskBundle)
+{
+	auto proc = [](const fx::Frame &) {
+		fx::WorkerResult r;
+		auto m = std::make_shared<fx::Mask>();
+		m->width = 1;
+		m->height = 1;
+		m->px = {0.5f};
+		r.mask = m;
+		auto f = std::make_shared<fx::Frame>();
+		f->width = 2;
+		f->height = 2;
+		f->bgra.assign(16, 7);
+		r.frame = f;
+		return r;
+	};
+	fx::Worker w(proc);
+	w.start();
+	auto f = std::make_shared<fx::Frame>();
+	f->width = 4;
+	f->height = 4;
+	f->bgra.assign(64, 1);
+	w.submit(f);
+	uint64_t seq = 0;
+	fx::WorkerResult r;
+	for (int i = 0; i < 100 && seq == 0; i++) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		r = w.tryGetLatest(seq);
+	}
+	w.stop();
+	ASSERT_EQ(seq, 1u);
+	ASSERT_TRUE(r.mask != nullptr);
+	ASSERT_TRUE(r.frame != nullptr);
+	ASSERT_EQ(r.frame->width, 2);
+	ASSERT_EQ(r.frame->bgra[0], 7);
 }
 
 TEST(SegmentationPipeline, EndToEndWithRealModel)
