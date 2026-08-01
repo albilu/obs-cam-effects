@@ -111,6 +111,7 @@ add_library(fx STATIC
   src/fx/models/rvm.cpp
   src/fx/models/yunet.cpp
   src/fx/models_dl/downloader.cpp
+  src/fx/pipeline/face_swap_pipeline.cpp
   src/fx/pipeline/segmentation_pipeline.cpp
   src/fx/worker.cpp
 )
@@ -162,6 +163,7 @@ if(BUILD_TESTING)
     tests/test_ep_probe.cpp
     tests/test_face_embedder.cpp
     tests/test_yunet.cpp
+    tests/test_face_swap_pipeline.cpp
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
   target_compile_features(fx_tests PRIVATE cxx_std_20)
