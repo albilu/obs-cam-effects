@@ -105,6 +105,7 @@ add_library(fx STATIC
   src/fx/image/align.cpp
   src/fx/image/ops.cpp
   src/fx/models/pp_humanseg.cpp
+  src/fx/models/face_embedder.cpp
   src/fx/models/mediapipe_lite.cpp
   src/fx/models/onnx_init.cpp
   src/fx/models/rvm.cpp
@@ -123,6 +124,7 @@ target_compile_definitions(fx PUBLIC
   FX_MODEL_PATH="${FX_MODEL_DIR}/pphumanseg_fp32.onnx"
   FX_MEDIAPIPE_MODEL_PATH="${FX_MODEL_DIR}/selfie_segmentation.onnx"
   FX_RVM_MODEL_PATH="${FX_MODEL_DIR}/rvm_mobilenetv3_fp32.onnx"
+  FX_ARCFACE_PATH="${FX_MODEL_DIR}/w600k_r50.onnx"
   FX_INSWAPPER_PATH="${FX_MODEL_DIR}/inswapper_128.onnx"
   FX_YUNET_MODEL_PATH="${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE fx)
@@ -158,6 +160,7 @@ if(BUILD_TESTING)
     tests/test_soak.cpp
     tests/test_downloader.cpp
     tests/test_ep_probe.cpp
+    tests/test_face_embedder.cpp
     tests/test_yunet.cpp
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
