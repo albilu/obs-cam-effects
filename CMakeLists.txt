@@ -167,6 +167,8 @@ if(BUILD_TESTING)
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
   target_compile_features(fx_tests PRIVATE cxx_std_20)
+  target_compile_definitions(fx_tests PRIVATE
+    FX_FIXTURE_FACE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/face-test.jpg")
   set_target_properties(fx_tests PROPERTIES BUILD_RPATH ${ORT_ROOT}/lib)
   gtest_discover_tests(fx_tests)
 endif()

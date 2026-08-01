@@ -151,9 +151,7 @@ bool FaceSwapPipeline::process(Frame &frame)
 
 	/* DLC anti-wobble: FIXED feathered ellipse in 128-crop space (NOT
 	 * landmark-derived), warped to frame space with the same invM
-	 * transform (uint8 plane; the warp is channel-count generic).
-	 * Out-of-crop samples clamp to crop-edge pixels, and the ellipse
-	 * is 0 at the border, so no clamping artifacts leak in. */
+	 * transform (uint8 plane; the warp is channel-count generic). */
 	std::vector<uint8_t> maskFull((size_t)w * h);
 	{
 		const std::vector<float> m128 =
@@ -163,6 +161,26 @@ bool FaceSwapPipeline::process(Frame &frame)
 			m128u[i] = (uint8_t)std::lround(m128[i] * 255.0f);
 		warpAffineBilinear(m128u.data(), kCrop, kCrop, 1, invM,
 				   maskFull.data(), w, h);
+	}
+
+	/* In-crop gate (whole-frame mask-bleed fix): the ellipse mask does
+	 * NOT reach 0 at the crop border (the post-feather blur leaves up
+	 * to ~0.18 there) and warpAffineBilinear CLAMPS out-of-crop
+	 * samples to that border — so every frame pixel whose crop
+	 * coordinate u,v = M*p leaves [0,kCrop)^2 would otherwise inherit
+	 * a nonzero alpha and smear clamped edge content across the whole
+	 * frame. The ellipse is only meaningful inside the crop; force
+	 * alpha 0 outside it so those pixels stay byte-identical. */
+	for (int y = 0; y < h; y++) {
+		for (int x = 0; x < w; x++) {
+			const float u =
+				m.m[0] * (float)x + m.m[1] * (float)y + m.m[2];
+			const float v =
+				m.m[3] * (float)x + m.m[4] * (float)y + m.m[5];
+			if (u < 0.0f || u >= (float)kCrop || v < 0.0f ||
+			    v >= (float)kCrop)
+				maskFull[(size_t)y * (size_t)w + x] = 0;
+		}
 	}
 
 	const size_t n = (size_t)w * h;
