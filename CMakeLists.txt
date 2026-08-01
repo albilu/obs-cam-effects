@@ -81,6 +81,20 @@ if(NOT EXISTS "${FX_MODEL_DIR}/selfie_segmentation.onnx")
     ${FX_MODEL_DIR}/selfie_segmentation.onnx.license)
 endif()
 
+# --- Bundled face detector: YuNet 2023mar (Apache-2.0) ---
+# NOTE: opencv_zoo stores this file in Git LFS; github.com/.../raw/...
+# redirects to media.githubusercontent.com and serves the real bytes
+# (verified SHA256 below, 232589 bytes). If a fresh checkout ever
+# yields a 131-byte LFS pointer instead, switch the URL to
+# https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
+# (same hash).
+if(NOT EXISTS "${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx")
+  file(DOWNLOAD
+    "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+    ${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx
+    EXPECTED_HASH SHA256=8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4)
+endif()
+
 find_package(Threads REQUIRED)
 
 # --- libfx: OBS-free core library (all inference code lives here from Plan 2) ---
@@ -94,6 +108,7 @@ add_library(fx STATIC
   src/fx/models/mediapipe_lite.cpp
   src/fx/models/onnx_init.cpp
   src/fx/models/rvm.cpp
+  src/fx/models/yunet.cpp
   src/fx/models_dl/downloader.cpp
   src/fx/pipeline/segmentation_pipeline.cpp
   src/fx/worker.cpp
@@ -108,7 +123,8 @@ target_compile_definitions(fx PUBLIC
   FX_MODEL_PATH="${FX_MODEL_DIR}/pphumanseg_fp32.onnx"
   FX_MEDIAPIPE_MODEL_PATH="${FX_MODEL_DIR}/selfie_segmentation.onnx"
   FX_RVM_MODEL_PATH="${FX_MODEL_DIR}/rvm_mobilenetv3_fp32.onnx"
-  FX_INSWAPPER_PATH="${FX_MODEL_DIR}/inswapper_128.onnx")
+  FX_INSWAPPER_PATH="${FX_MODEL_DIR}/inswapper_128.onnx"
+  FX_YUNET_MODEL_PATH="${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE fx)
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
   BUILD_RPATH "\$ORIGIN;${ORT_ROOT}/lib"
@@ -142,6 +158,7 @@ if(BUILD_TESTING)
     tests/test_soak.cpp
     tests/test_downloader.cpp
     tests/test_ep_probe.cpp
+    tests/test_yunet.cpp
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
   target_compile_features(fx_tests PRIVATE cxx_std_20)
