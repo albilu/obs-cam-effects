@@ -22,6 +22,14 @@ void cam_fx_destroy(cam_fx_t *fx);
 void cam_fx_submit(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
 		   int linesize);
 
+/* Submits a packed BGRA frame at the target's full resolution for the
+ * face-swap dataflow: the worker runs swap -> segmentation on it and
+ * publishes frame+mask. Same non-blocking semantics as cam_fx_submit.
+ * Use exactly one of the two per render tick (full-res when face swap
+ * is on, the small stage otherwise — never both). */
+void cam_fx_submit_full(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
+			int linesize);
+
 /* Fetches the latest mask. Returns 1 if a mask exists, 0 otherwise.
  * On success *px points to an internal w*h uint8 buffer valid until the
  * next call, and *seq is the mask sequence number (increments per mask). */

@@ -383,6 +383,21 @@ void pumpFaceswapDownload(cam_fx *fx)
 	}
 }
 
+/* Packs the (possibly padded) BGRA rows into an fx::Frame and hands it
+ * to the worker. Shared by both submit entry points. */
+void submitFrame(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
+		 int linesize)
+{
+	auto frame = std::make_shared<fx::Frame>();
+	frame->width = w;
+	frame->height = h;
+	frame->bgra.resize((size_t)w * h * 4);
+	for (int y = 0; y < h; y++)
+		std::memcpy(frame->bgra.data() + (size_t)y * w * 4,
+			    bgra + (size_t)y * linesize, (size_t)w * 4);
+	fx->worker->submit(std::move(frame));
+}
+
 } // namespace
 
 extern "C" {
@@ -425,14 +440,13 @@ void cam_fx_destroy(cam_fx_t *fx)
 void cam_fx_submit(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
 		   int linesize)
 {
-	auto frame = std::make_shared<fx::Frame>();
-	frame->width = w;
-	frame->height = h;
-	frame->bgra.resize((size_t)w * h * 4);
-	for (int y = 0; y < h; y++)
-		std::memcpy(frame->bgra.data() + (size_t)y * w * 4,
-			    bgra + (size_t)y * linesize, (size_t)w * 4);
-	fx->worker->submit(std::move(frame));
+	submitFrame(fx, bgra, w, h, linesize);
+}
+
+void cam_fx_submit_full(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
+			int linesize)
+{
+	submitFrame(fx, bgra, w, h, linesize);
 }
 
 int cam_fx_try_get_mask(cam_fx_t *fx, const uint8_t **px, int *w, int *h,

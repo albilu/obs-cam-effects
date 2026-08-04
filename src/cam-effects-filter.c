@@ -27,6 +27,11 @@
 
 #define STAGE_SIZE 192
 #define MASK_STALE_MS 1000
+/* Face-swap staging runs at the target's base size, capped at 1080p:
+ * beyond that the full-res stage/download/submit cost is not real-time
+ * viable, so face swap is skipped (background-only behavior). */
+#define FULL_STAGE_MAX_W 1920
+#define FULL_STAGE_MAX_H 1080
 
 #include <stdatomic.h>
 
@@ -68,6 +73,16 @@ struct cam_effects_filter {
 
 	gs_texrender_t *stage_render;   /* STAGE_SIZE x STAGE_SIZE */
 	gs_stagesurf_t *stage_surface;  /* STAGE_SIZE x STAGE_SIZE BGRA */
+	gs_texrender_t *full_render;    /* base-size staging (face swap) */
+	gs_stagesurf_t *full_surface;   /* base-size BGRA (face swap) */
+	uint32_t full_w;		/* current full staging width */
+	uint32_t full_h;		/* current full staging height */
+	gs_texture_t *frame_tex;	/* latest swapped frame */
+	uint32_t frame_tex_w;
+	uint32_t frame_tex_h;
+	uint64_t frame_seq;		/* last uploaded swapped-frame seq */
+	bool full_oversize;		/* target exceeds the 1080p cap */
+	bool full_oversize_logged;	/* cap warning already logged */
 	gs_texrender_t *out_render;     /* frame-size composite + freeze */
 	gs_texture_t *mask_tex;         /* STAGE_SIZE x STAGE_SIZE R8 */
 	gs_effect_t *effect;            /* mask_composite.effect */
@@ -105,6 +120,9 @@ static void cam_effects_destroy_graphics(struct cam_effects_filter *filter)
 	obs_enter_graphics();
 	gs_texrender_destroy(filter->stage_render);
 	gs_stagesurface_destroy(filter->stage_surface);
+	gs_texrender_destroy(filter->full_render);
+	gs_stagesurface_destroy(filter->full_surface);
+	gs_texture_destroy(filter->frame_tex);
 	gs_texrender_destroy(filter->out_render);
 	gs_texrender_destroy(filter->blur_a);
 	gs_texrender_destroy(filter->blur_b);
@@ -241,8 +259,11 @@ static void cam_effects_compose_status(struct cam_effects_filter *filter)
 			 "Face swap: download error: %s",
 			 fs_err[0] ? fs_err : "unknown");
 	} else if (cam_fx_faceswap_available(filter->fx))
-		snprintf(fs_text, sizeof(fs_text), "Face swap: %s",
-			 filter->face_swap ? "on" : "off");
+		snprintf(fs_text, sizeof(fs_text), "Face swap: %s%s",
+			 filter->face_swap ? "on" : "off",
+			 (filter->face_swap && filter->full_oversize)
+				 ? " — source too large, background only"
+				 : "");
 	else {
 		char reason[96] = {0};
 		cam_fx_faceswap_missing(filter->fx, reason, sizeof(reason));
@@ -612,6 +633,91 @@ static void cam_effects_stage(struct cam_effects_filter *filter,
 	}
 }
 
+/* Render the parent source at its base size into the full-res staging
+ * surface and submit it to the face-swap worker (which runs
+ * swap -> segmentation on it and publishes frame+mask). This is the
+ * face-swap counterpart of cam_effects_stage — when face swap is on
+ * it is the ONLY submission (the 192 stage would double-submit; the
+ * worker derives the mask from the swapped full-res frame itself).
+ * full_render/full_surface are created lazily here; video_render runs
+ * on the graphics thread. */
+static void cam_effects_stage_full(struct cam_effects_filter *filter,
+				   obs_source_t *target, uint32_t w, uint32_t h)
+{
+	if (!filter->full_render)
+		filter->full_render = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+	if (!filter->full_render)
+		return;
+	if (!filter->full_surface || filter->full_w != w ||
+	    filter->full_h != h) {
+		gs_stagesurface_destroy(filter->full_surface);
+		filter->full_surface = gs_stagesurface_create(w, h, GS_BGRA);
+		filter->full_w = w;
+		filter->full_h = h;
+	}
+	if (!filter->full_surface)
+		return;
+
+	gs_texrender_reset(filter->full_render);
+	if (!gs_texrender_begin(filter->full_render, w, h))
+		return;
+	struct vec4 clear;
+	vec4_zero(&clear);
+	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+	gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+	/* Same default-effect wrap as cam_effects_stage: sources without
+	 * their own effect loop (e.g. image sources) would otherwise
+	 * draw with no effect active. */
+	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	while (gs_effect_loop(def, "Draw"))
+		obs_source_video_render(target);
+	gs_blend_state_pop();
+	gs_texrender_end(filter->full_render);
+
+	gs_stage_texture(filter->full_surface,
+			 gs_texrender_get_texture(filter->full_render));
+	uint8_t *data = NULL;
+	uint32_t linesize = 0;
+	if (gs_stagesurface_map(filter->full_surface, &data, &linesize)) {
+		cam_fx_submit_full(filter->fx, data, (int)w, (int)h,
+				   (int)linesize);
+		gs_stagesurface_unmap(filter->full_surface);
+	}
+}
+
+/* Upload the latest swapped frame to frame_tex (created/recreated on
+ * size change; uploaded only when the sequence advanced). Returns
+ * frame_tex, or NULL when unavailable. The bridge buffer is packed
+ * BGRA (linesize == w*4) and stays valid until the next
+ * cam_fx_try_get_frame call. */
+static gs_texture_t *cam_effects_frame_tex(struct cam_effects_filter *filter,
+					   const uint8_t *data, int w, int h,
+					   uint64_t seq)
+{
+	if (w <= 0 || h <= 0)
+		return NULL;
+	if (!filter->frame_tex || filter->frame_tex_w != (uint32_t)w ||
+	    filter->frame_tex_h != (uint32_t)h) {
+		gs_texture_destroy(filter->frame_tex);
+		filter->frame_tex = gs_texture_create((uint32_t)w,
+						      (uint32_t)h, GS_BGRA, 1,
+						      NULL, GS_DYNAMIC);
+		filter->frame_tex_w = (uint32_t)w;
+		filter->frame_tex_h = (uint32_t)h;
+		filter->frame_seq = 0; /* force re-upload below */
+	}
+	if (!filter->frame_tex)
+		return NULL;
+	if (seq != filter->frame_seq) {
+		gs_texture_set_image(filter->frame_tex, data,
+				     (uint32_t)w * 4, false);
+		filter->frame_seq = seq;
+	}
+	return filter->frame_tex;
+}
+
 /* Draw the contents of out_render to screen. */
 static void cam_effects_draw_out(struct cam_effects_filter *filter,
 				 uint32_t w, uint32_t h)
@@ -626,16 +732,19 @@ static void cam_effects_draw_out(struct cam_effects_filter *filter,
 		gs_draw_sprite(tex, 0, w, h);
 }
 
-/* Runs `passes` Kawase blur iterations on target at half resolution.
+/* Runs `passes` Kawase blur iterations at half resolution. The source
+ * is src_tex when given (face swap: the swapped frame), otherwise the
+ * target is rendered directly (background-only path, unchanged).
  * Returns the texture containing the blurred result, or NULL. */
 static gs_texture_t *cam_effects_blur(struct cam_effects_filter *filter,
-				      obs_source_t *target, uint32_t w,
+				      obs_source_t *target,
+				      gs_texture_t *src_tex, uint32_t w,
 				      uint32_t h)
 {
 	uint32_t bw = w / 2 > 0 ? w / 2 : 1;
 	uint32_t bh = h / 2 > 0 ? h / 2 : 1;
 
-	/* Downsample target into blur_a using the default effect. */
+	/* Downsample the source into blur_a using the default effect. */
 	gs_texrender_reset(filter->blur_a);
 	if (!gs_texrender_begin(filter->blur_a, bw, bh))
 		return NULL;
@@ -645,14 +754,22 @@ static gs_texture_t *cam_effects_blur(struct cam_effects_filter *filter,
 	gs_ortho(0.0f, (float)bw, 0.0f, (float)bh, -100.0f, 100.0f);
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
-	gs_matrix_push();
-	gs_matrix_scale3f((float)bw / (float)w, (float)bh / (float)h, 1.0f);
-	/* Like the staging path: sources without their own effect loop
-	 * (e.g. image sources) need the default effect active. */
 	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-	while (gs_effect_loop(def, "Draw"))
-		obs_source_video_render(target);
-	gs_matrix_pop();
+	if (src_tex) {
+		gs_effect_set_texture(
+			gs_effect_get_param_by_name(def, "image"), src_tex);
+		while (gs_effect_loop(def, "Draw"))
+			gs_draw_sprite(src_tex, 0, bw, bh);
+	} else {
+		gs_matrix_push();
+		gs_matrix_scale3f((float)bw / (float)w, (float)bh / (float)h,
+				  1.0f);
+		/* Like the staging path: sources without their own effect
+		 * loop (e.g. image sources) need the default effect active. */
+		while (gs_effect_loop(def, "Draw"))
+			obs_source_video_render(target);
+		gs_matrix_pop();
+	}
 	gs_blend_state_pop();
 	gs_texrender_end(filter->blur_a);
 
@@ -712,7 +829,25 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 		return;
 	}
 
-	if (mode == MODE_OFF || w == 0 || h == 0 || !filter->fx) {
+	/* Face swap dataflow: submit ONLY the full-res frame (the worker
+	 * runs swap -> segmentation on it and publishes frame+mask) and
+	 * composite the swapped frame it returns. Requires the setting,
+	 * a running engine, bridge availability (models + CUDA) and a
+	 * target within the staging cap; anything else falls back to the
+	 * background-only 192 dataflow (byte-identical to face swap off). */
+	bool oversize = filter->face_swap &&
+			(w > FULL_STAGE_MAX_W || h > FULL_STAGE_MAX_H);
+	filter->full_oversize = oversize;
+	if (oversize && !filter->full_oversize_logged) {
+		filter->full_oversize_logged = true;
+		blog(LOG_WARNING,
+		     "obs-cam-effects: source %ux%u exceeds the %dx%d face-swap staging cap; face swap skipped (background only)",
+		     w, h, FULL_STAGE_MAX_W, FULL_STAGE_MAX_H);
+	}
+	bool fs = filter->face_swap && filter->fx && w > 0 && h > 0 &&
+		  !oversize && cam_fx_faceswap_available(filter->fx) == 1;
+
+	if (!fs && (mode == MODE_OFF || w == 0 || h == 0 || !filter->fx)) {
 		if (freeze && mode != MODE_OFF) {
 			cam_effects_draw_out(filter, w ? w : 1920,
 					     h ? h : 1080);
@@ -722,7 +857,10 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 		return;
 	}
 
-	cam_effects_stage(filter, target);
+	if (fs)
+		cam_effects_stage_full(filter, target, w, h);
+	else
+		cam_effects_stage(filter, target);
 
 	const uint8_t *mask = NULL;
 	int mw = 0, mh = 0;
@@ -730,8 +868,18 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	bool have_mask =
 		cam_fx_try_get_mask(filter->fx, &mask, &mw, &mh, &seq) == 1;
 
-	if (!have_mask) {
-		/* Startup: no mask ever processed yet. */
+	const uint8_t *fdata = NULL;
+	int fw = 0, fh = 0;
+	uint64_t fseq = 0;
+	bool have_frame =
+		fs && cam_fx_try_get_frame(filter->fx, &fdata, &fw, &fh,
+					   &fseq) == 1;
+
+	/* Face swap keys on the swapped frame (mask seq is shared with
+	 * it); background-only keys on the mask, as before. */
+	bool ready = fs ? have_frame : have_mask;
+	if (!ready) {
+		/* Startup: nothing processed yet. */
 		if (freeze) {
 			cam_effects_draw_out(filter, w, h); /* black */
 			return;
@@ -750,6 +898,38 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 		return;
 	}
 
+	gs_texture_t *frame_tex =
+		fs ? cam_effects_frame_tex(filter, fdata, fw, fh, fseq)
+		   : NULL;
+
+	/* Face swap alone (background off): the swapped frame IS the
+	 * output. Route it through out_render so the freeze failure mode
+	 * shows the last COMPOSITED frame, watermark included (spec
+	 * §8/§9). Draws like cam_effects_draw_out but for frame_tex. */
+	if (fs && mode == MODE_OFF) {
+		gs_texrender_reset(filter->out_render);
+		if (frame_tex && gs_texrender_begin(filter->out_render, w, h)) {
+			struct vec4 clear;
+			vec4_zero(&clear);
+			gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+			gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f,
+				 100.0f);
+			gs_blend_state_push();
+			gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+			gs_effect_t *def =
+				obs_get_base_effect(OBS_EFFECT_DEFAULT);
+			gs_effect_set_texture(
+				gs_effect_get_param_by_name(def, "image"),
+				frame_tex);
+			while (gs_effect_loop(def, "Draw"))
+				gs_draw_sprite(frame_tex, 0, w, h);
+			gs_blend_state_pop();
+			gs_texrender_end(filter->out_render);
+		}
+		cam_effects_draw_out(filter, w, h);
+		return;
+	}
+
 	/* Upload mask and composite into out_render. */
 	if (mw == STAGE_SIZE && mh == STAGE_SIZE)
 		gs_texture_set_image(filter->mask_tex, mask, (uint32_t)mw,
@@ -759,12 +939,14 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	if (mode == MODE_IMAGE && filter->bg_loaded)
 		tech = "DrawReplace";
 
-	/* Blur must run before out_render begins (it renders the target
-	 * into its own texrenders). Fall back to transparent if the
-	 * kawase effect failed to load or the blur pass fails. */
+	/* Blur must run before out_render begins (it renders into its
+	 * own texrenders). Fall back to transparent if the kawase effect
+	 * failed to load or the blur pass fails. Face swap blurs
+	 * frame_tex; otherwise the target is re-rendered as before. */
 	gs_texture_t *blur = NULL;
 	if (mode == MODE_BLUR && filter->blur_effect) {
-		blur = cam_effects_blur(filter, target, w, h);
+		blur = cam_effects_blur(filter, target,
+					fs ? frame_tex : NULL, w, h);
 		if (blur)
 			tech = "DrawBlur";
 	}
@@ -782,6 +964,15 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 		gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
 		if (obs_source_process_filter_begin(filter->source, GS_BGRA,
 						    OBS_NO_DIRECT_RENDERING)) {
+			/* process_filter_begin auto-binds the unswapped
+			 * source to "image": override with the swapped
+			 * frame (all techniques sample it, incl. the
+			 * sharp foreground of DrawBlur). */
+			if (frame_tex)
+				gs_effect_set_texture(
+					gs_effect_get_param_by_name(
+						filter->effect, "image"),
+					frame_tex);
 			gs_effect_set_texture(
 				gs_effect_get_param_by_name(filter->effect,
 							    "mask"),
