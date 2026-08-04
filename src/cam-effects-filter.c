@@ -101,7 +101,7 @@ struct cam_effects_filter {
 	gs_image_file_t bg_image;
 	bool bg_loaded;
 
-	bool face_swap;
+	atomic_int face_swap; /* 0/1 */
 	char *face_image_path;	  /* current setting */
 	char *face_image_applied; /* last path applied to the bridge */
 };
@@ -258,12 +258,15 @@ static void cam_effects_compose_status(struct cam_effects_filter *filter)
 		snprintf(fs_text, sizeof(fs_text),
 			 "Face swap: download error: %s",
 			 fs_err[0] ? fs_err : "unknown");
-	} else if (cam_fx_faceswap_available(filter->fx))
+	} else if (cam_fx_faceswap_available(filter->fx)) {
+		bool face_swap = atomic_load_explicit(&filter->face_swap,
+						      memory_order_relaxed) != 0;
 		snprintf(fs_text, sizeof(fs_text), "Face swap: %s%s",
-			 filter->face_swap ? "on" : "off",
-			 (filter->face_swap && filter->full_oversize)
+			 face_swap ? "on" : "off",
+			 (face_swap && filter->full_oversize)
 				 ? " — source too large, background only"
 				 : "");
+	}
 	else {
 		char reason[96] = {0};
 		cam_fx_faceswap_missing(filter->fx, reason, sizeof(reason));
@@ -349,7 +352,9 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 	float mask_temporal =
 		(float)obs_data_get_double(settings, SETTING_MASK_TEMPORAL);
 
-	filter->face_swap = obs_data_get_bool(settings, SETTING_FACE_SWAP);
+	bool face_swap = obs_data_get_bool(settings, SETTING_FACE_SWAP);
+	atomic_store_explicit(&filter->face_swap, face_swap ? 1 : 0,
+			      memory_order_relaxed);
 	bfree(filter->face_image_path);
 	filter->face_image_path =
 		bstrdup(obs_data_get_string(settings, SETTING_FACE_IMAGE));
@@ -389,7 +394,7 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 	if (!filter->fx &&
 	    (atomic_load_explicit(&filter->mode_id, memory_order_relaxed) !=
 		     MODE_OFF ||
-	     filter->face_swap)) {
+	     face_swap)) {
 		char *lite = obs_module_file("models/selfie_segmentation.onnx");
 		char *standard =
 			obs_module_file("models/pphumanseg_fp32.onnx");
@@ -438,8 +443,7 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 			filter->face_image_applied =
 				bstrdup(filter->face_image_path);
 		}
-		cam_fx_faceswap_set_enabled(filter->fx,
-					    filter->face_swap ? 1 : 0);
+		cam_fx_faceswap_set_enabled(filter->fx, face_swap ? 1 : 0);
 	}
 	cam_effects_compose_status(filter);
 }
@@ -811,6 +815,8 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	bool freeze = atomic_load_explicit(&filter->failure_id,
 					   memory_order_relaxed) ==
 		      FAILURE_FREEZE;
+	bool face_swap = atomic_load_explicit(&filter->face_swap,
+					      memory_order_relaxed) != 0;
 
 	obs_source_t *target = obs_filter_get_target(filter->source);
 	uint32_t w = target ? obs_source_get_base_width(target) : 0;
@@ -835,7 +841,7 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	 * a running engine, bridge availability (models + CUDA) and a
 	 * target within the staging cap; anything else falls back to the
 	 * background-only 192 dataflow (byte-identical to face swap off). */
-	bool oversize = filter->face_swap &&
+	bool oversize = face_swap &&
 			(w > FULL_STAGE_MAX_W || h > FULL_STAGE_MAX_H);
 	filter->full_oversize = oversize;
 	if (oversize && !filter->full_oversize_logged) {
@@ -844,7 +850,7 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 		     "obs-cam-effects: source %ux%u exceeds the %dx%d face-swap staging cap; face swap skipped (background only)",
 		     w, h, FULL_STAGE_MAX_W, FULL_STAGE_MAX_H);
 	}
-	bool fs = filter->face_swap && filter->fx && w > 0 && h > 0 &&
+	bool fs = face_swap && filter->fx && w > 0 && h > 0 &&
 		  !oversize && cam_fx_faceswap_available(filter->fx) == 1;
 
 	if (!fs && (mode == MODE_OFF || w == 0 || h == 0 || !filter->fx)) {
@@ -962,17 +968,40 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 		gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
 		gs_blend_state_push();
 		gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
-		if (obs_source_process_filter_begin(filter->source, GS_BGRA,
-						    OBS_NO_DIRECT_RENDERING)) {
-			/* process_filter_begin auto-binds the unswapped
-			 * source to "image": override with the swapped
-			 * frame (all techniques sample it, incl. the
-			 * sharp foreground of DrawBlur). */
-			if (frame_tex)
+		if (frame_tex) {
+			/* Swapped frame: drive the technique manually.
+			 * process_filter_tech_end -> render_filter_tex
+			 * rebinds "image" to the unswapped parent
+			 * texture unconditionally (params upload at
+			 * pass begin, last-set-wins), so an override
+			 * after process_filter_begin would be dead
+			 * code — and process_filter_begin would render
+			 * the parent for nothing. ViewProj is
+			 * auto-populated from the current projection
+			 * (same convention as the Kawase helper). */
+			gs_effect_set_texture(
+				gs_effect_get_param_by_name(filter->effect,
+							    "image"),
+				frame_tex);
+			gs_effect_set_texture(
+				gs_effect_get_param_by_name(filter->effect,
+							    "mask"),
+				filter->mask_tex);
+			if (filter->bg_loaded)
 				gs_effect_set_texture(
 					gs_effect_get_param_by_name(
-						filter->effect, "image"),
-					frame_tex);
+						filter->effect, "bg_image"),
+					filter->bg_image.texture);
+			if (blur)
+				gs_effect_set_texture(
+					gs_effect_get_param_by_name(
+						filter->effect, "blur_image"),
+					blur);
+			while (gs_effect_loop(filter->effect, tech))
+				gs_draw_sprite(frame_tex, 0, w, h);
+		} else if (obs_source_process_filter_begin(
+				   filter->source, GS_BGRA,
+				   OBS_NO_DIRECT_RENDERING)) {
 			gs_effect_set_texture(
 				gs_effect_get_param_by_name(filter->effect,
 							    "mask"),
