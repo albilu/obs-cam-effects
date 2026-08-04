@@ -35,9 +35,19 @@ PP-HumanSeg pipeline on the worker thread, latest-wins drop policy, 600 frames o
 
 RVM hard-segfaults the ORT 1.28 prebuilt CUDA EP (uncatchable SIGSEGV) on sm_120 — upstream kernel-coverage gap (microsoft/onnxruntime#26177; prebuilt EPs lack complete sm_120 kernels; source builds with `CMAKE_CUDA_ARCHITECTURES=120` work). RVM is pinned to CPU (59 fps — fine). PP-HumanSeg and MediaPipe run correctly on the same EP. Re-test on ORT/cuDNN bumps.
 
-## Face swap models (Plan 4, pending)
+inswapper_128 shows the identical failure (2026-08-04): session creation on the CUDA EP succeeds (`usesCuda=1`), the first `Run()` hard-segfaults (exit 139) — see the face swap section below.
 
-| Model | CPU | CUDA (RTX 5070) | Notes |
+## Face swap models (2026-08-04)
+
+Fixture: `tests/data/face-test.jpg` (640×799, real face, detection score 0.95). 100 iterations after 1 warmup, ORT intra-op threads = 2. "detect" = full YuNet path (resize + inference + decode/NMS); "model" = inference only.
+
+| Stage | CPU | CUDA (RTX 5070) | Notes |
 |---|---|---|---|
-| YuNet 2023mar (640×640) | — | — | Task 9 |
-| inswapper_128 (128×128) | — | — | Task 9; 174.7 GFLOPs — CPU not viable per spec |
+| YuNet 2023mar — detect (full path) | **10.23 ms** | — | fx::YuNet is CPU-only by design (no providersDir ctor param) |
+| YuNet 2023mar — model only | 4.93 ms | **1.68 ms** | raw OrtModel; **runs correctly on the Blackwell EP** (2.9× speedup) |
+| inswapper_128 — model only | **1277.21 ms** | — | **SIGSEGV on first Run() with the prebuilt CUDA EP** |
+| FaceSwapPipeline end-to-end | **1288.91 ms (0.8 fps)** | — | same SIGSEGV via `process()` with providersDir |
+
+**CPU face swap is not viable** (spec confirmed): 0.8 fps end-to-end — the 174.7-GFLOP inswapper dominates (~1.28 s/frame). YuNet detect alone (10.2 ms) would be fine on CPU.
+
+**inswapper on Blackwell: SIGSEGV** — same failure mode as RVM (see "Known issue" above): the OrtModel exception-fallback never engages because a SEGV is uncatchable. Face swap is therefore gated off entirely on this machine (CPU too slow, CUDA crashes). Re-test on ORT/cuDNN bumps or a source-built EP with `CMAKE_CUDA_ARCHITECTURES=120`.
