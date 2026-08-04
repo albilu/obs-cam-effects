@@ -1,7 +1,10 @@
 #include "fx_bridge.h"
 
 #include "fx/engine/ep_probe.h"
+#include "fx/models/face_embedder.h"
+#include "fx/models/yunet.h"
 #include "fx/models_dl/downloader.h"
+#include "fx/pipeline/face_swap_pipeline.h"
 #include "fx/pipeline/segmentation_pipeline.h"
 #include "fx/worker.h"
 
@@ -14,6 +17,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
@@ -114,6 +118,27 @@ struct cam_fx {
 	int64_t fpsWinStart = 0;
 	uint64_t fpsCount = 0;
 	uint64_t fpsLast = 0;
+
+	/* Face swap. swapM serializes UI-thread setSource/params against
+	 * the worker thread's swapPipeline->process() (captured by the
+	 * processor lambda as a shared_ptr so it outlives the bridge). */
+	std::shared_ptr<fx::FaceSwapPipeline> swapPipeline;
+	std::shared_ptr<std::mutex> swapM = std::make_shared<std::mutex>();
+	std::unique_ptr<fx::FaceEmbedder> embedder; // lazy, cached
+	std::unique_ptr<fx::YuNet> embedDetector;   // lazy, cached
+	fx::FaceSwapParams swapParams;
+	std::vector<float> pendingLatent; // source set before pipeline built
+	bool faceswapEnabled = false;
+
+	/* 2-stage face-swap download chain (inswapper_128 -> w600k_r50):
+	 * fsId is the current stage ("" when the chain is idle). */
+	std::string fsId;
+	bool fsChain = false;
+
+	uint64_t seenFrameSeq = 0;
+	std::vector<uint8_t> u8frame;
+	int frameW = 0;
+	int frameH = 0;
 };
 
 namespace {
@@ -136,6 +161,75 @@ fx::SegTier resolveTier(int requested, const std::string &qualityPath)
 	}
 }
 
+/* Cache path of a "model"-kind manifest entry. Falls back to the
+ * conventional filename when the manifest lacks the id. */
+std::string modelCachePath(cam_fx *fx, const char *id, const char *fallback)
+{
+	for (const auto &m : fx->manifest)
+		if (m.id == id && m.kind == "model")
+			return cacheDir("models") + "/" + m.file;
+	return cacheDir("models") + "/" + fallback;
+}
+
+std::string inswapperCachePath(cam_fx *fx)
+{
+	return modelCachePath(fx, "inswapper_128", "inswapper_128.onnx");
+}
+
+std::string arcfaceCachePath(cam_fx *fx)
+{
+	return modelCachePath(fx, "w600k_r50", "w600k_r50.onnx");
+}
+
+bool faceswapModelsPresent(cam_fx *fx)
+{
+	return fileExists(inswapperCachePath(fx)) &&
+	       fileExists(arcfaceCachePath(fx));
+}
+
+std::string yunetBundledPath()
+{
+	char *p = obs_module_file("models/face_detection_yunet_2023mar.onnx");
+	std::string out = p ? p : "";
+	if (p)
+		bfree(p);
+	return out;
+}
+
+/* Installs the worker processor matching the current state: swap-then-
+ * segment when face swap is enabled and built, segment-only otherwise.
+ * Pipelines (and the swap mutex) are captured by shared_ptr so a
+ * hot-swap never tears a mid-call pipeline. */
+void installProcessor(cam_fx *fx)
+{
+	if (!fx->worker || !fx->pipeline)
+		return;
+	std::shared_ptr<fx::SegmentationPipeline> seg = fx->pipeline;
+	if (fx->faceswapEnabled && fx->swapPipeline) {
+		std::shared_ptr<fx::FaceSwapPipeline> swap = fx->swapPipeline;
+		std::shared_ptr<std::mutex> m = fx->swapM;
+		fx->worker->setProcessor(
+			[seg, swap, m](const fx::Frame &frame) {
+				fx::Frame work = frame;
+				{
+					std::lock_guard<std::mutex> lk(*m);
+					swap->process(work);
+				}
+				fx::WorkerResult r;
+				r.mask = seg->process(work);
+				r.frame = std::make_shared<const fx::Frame>(
+					std::move(work));
+				return r;
+			});
+	} else {
+		fx->worker->setProcessor([seg](const fx::Frame &frame) {
+			fx::WorkerResult r;
+			r.mask = seg->process(frame);
+			return r;
+		});
+	}
+}
+
 /* Builds a pipeline on the calling thread (~100ms model load), then
  * hot-swaps it into the worker. Falls back to Standard when Quality
  * construction fails. */
@@ -151,15 +245,7 @@ bool buildAndSwap(cam_fx *fx, fx::SegTier tier)
 		static const char *names[] = {"lite", "standard", "quality"};
 		blog(LOG_INFO, "obs-cam-effects: pipeline tier in effect: %s",
 		     names[(int)tier]);
-		if (fx->worker) {
-			fx::Worker::Processor proc =
-				[p](const fx::Frame &frame) {
-					fx::WorkerResult r;
-					r.mask = p->process(frame);
-					return r;
-				};
-			fx->worker->setProcessor(std::move(proc));
-		}
+		installProcessor(fx);
 		return true;
 	} catch (const std::exception &e) {
 		blog(LOG_WARNING,
@@ -224,6 +310,77 @@ void parseManifest(cam_fx *fx)
 	obs_data_release(data);
 	blog(LOG_INFO, "obs-cam-effects: manifest parsed, %zu entries",
 	     fx->manifest.size());
+}
+
+/* Starts a background download for the given manifest entry id.
+ * Returns 0 on start, -1 if busy/invalid. */
+int startDownloadById(cam_fx *fx, const char *id)
+{
+	const ManifestEntry *entry = nullptr;
+	for (const auto &m : fx->manifest) {
+		if (m.id == id) {
+			entry = &m;
+			break;
+		}
+	}
+	if (!entry)
+		return -1;
+	fx::models_dl::DownloadRequest req;
+	req.url = entry->url;
+	req.sha256 = entry->sha256;
+	req.expectedSize = entry->size;
+	if (entry->kind == "provider") {
+		/* A provider without an extract list would download a
+		 * useless 240MB tgz and report Done (manifest formatting
+		 * drift) — refuse. */
+		if (entry->extract.empty())
+			return -1;
+		req.destPath = cacheDir("providers") + "/" + entry->id + ".tgz";
+		req.extractMembers = entry->extract;
+		req.extractDestDir = cacheDir("providers");
+		/* The provider tar nests the .so files under
+		 * <pkg>/lib/: strip 2 components so they land flat. */
+		req.stripComponents = 2;
+	} else {
+		req.destPath = cacheDir("models") + "/" + entry->file;
+	}
+	try {
+		fx->downloader->start(req);
+		blog(LOG_INFO, "obs-cam-effects: download started: %s",
+		     entry->id.c_str());
+		return 0;
+	} catch (...) {
+		return -1;
+	}
+}
+
+/* Drives the 2-stage face-swap chain: when inswapper_128 completes,
+ * w600k_r50 starts (skipped when its file already exists). Called from
+ * the status getters, so every UI poll advances the chain. On error
+ * the chain stops with fsId on the failed stage. */
+void pumpFaceswapDownload(cam_fx *fx)
+{
+	if (!fx->fsChain)
+		return;
+	fx::models_dl::State st = fx->downloader->state();
+	if (st == fx::models_dl::State::Error) {
+		fx->fsChain = false;
+		return;
+	}
+	if (st != fx::models_dl::State::Done)
+		return;
+	if (fx->fsId == "inswapper_128") {
+		if (!fileExists(arcfaceCachePath(fx)) &&
+		    startDownloadById(fx, "w600k_r50") == 0) {
+			fx->fsId = "w600k_r50";
+			return;
+		}
+		fx->fsChain = false;
+		fx->fsId.clear();
+	} else if (fx->fsId == "w600k_r50") {
+		fx->fsChain = false;
+		fx->fsId.clear();
+	}
 }
 
 } // namespace
@@ -371,42 +528,7 @@ int cam_fx_start_download(cam_fx_t *fx, const char *id)
 {
 	if (!fx || !id)
 		return -1;
-	const ManifestEntry *entry = nullptr;
-	for (const auto &m : fx->manifest) {
-		if (m.id == id) {
-			entry = &m;
-			break;
-		}
-	}
-	if (!entry)
-		return -1;
-	fx::models_dl::DownloadRequest req;
-	req.url = entry->url;
-	req.sha256 = entry->sha256;
-	req.expectedSize = entry->size;
-	if (entry->kind == "provider") {
-		/* A provider without an extract list would download a
-		 * useless 240MB tgz and report Done (manifest formatting
-		 * drift) — refuse. */
-		if (entry->extract.empty())
-			return -1;
-		req.destPath = cacheDir("providers") + "/" + entry->id + ".tgz";
-		req.extractMembers = entry->extract;
-		req.extractDestDir = cacheDir("providers");
-		/* The provider tar nests the .so files under
-		 * <pkg>/lib/: strip 2 components so they land flat. */
-		req.stripComponents = 2;
-	} else {
-		req.destPath = cacheDir("models") + "/" + entry->file;
-	}
-	try {
-		fx->downloader->start(req);
-		blog(LOG_INFO, "obs-cam-effects: download started: %s",
-		     entry->id.c_str());
-		return 0;
-	} catch (...) {
-		return -1;
-	}
+	return startDownloadById(fx, id);
 }
 
 int cam_fx_download_state(cam_fx_t *fx, char *buf, int buf_len,
@@ -414,6 +536,10 @@ int cam_fx_download_state(cam_fx_t *fx, char *buf, int buf_len,
 {
 	if (!fx)
 		return -1;
+	try {
+		pumpFaceswapDownload(fx);
+	} catch (...) {
+	}
 	if (buf && buf_len > 0)
 		snprintf(buf, (size_t)buf_len, "%s",
 			 fx::models_dl::stateName(fx->downloader->state()));
@@ -465,24 +591,222 @@ int cam_fx_backend(cam_fx_t *fx, char *buf, int buf_len)
 	return 0;
 }
 
-/* Face swap stubs — Task 7 wires these into the filter. */
-int cam_fx_faceswap_available(cam_fx_t *)
+int cam_fx_faceswap_available(cam_fx_t *fx)
 {
-	return 0;
+	if (!fx)
+		return 0;
+	try {
+		pumpFaceswapDownload(fx);
+		return faceswapModelsPresent(fx) &&
+			       fx::EpProbe::cudaAvailable(
+				       cacheDir("providers"))
+			       ? 1
+			       : 0;
+	} catch (...) {
+		return 0;
+	}
 }
 
-int cam_fx_faceswap_set_source(cam_fx_t *, const char *)
+int cam_fx_faceswap_missing(cam_fx_t *fx, char *buf, int buf_len)
 {
-	return -1;
+	if (!fx)
+		return 1;
+	const char *reason = "";
+	try {
+		if (!faceswapModelsPresent(fx))
+			reason = "models not downloaded";
+		else if (!fx::EpProbe::cudaAvailable(cacheDir("providers")))
+			reason = "no GPU acceleration";
+	} catch (...) {
+		reason = "unavailable";
+	}
+	if (buf && buf_len > 0)
+		snprintf(buf, (size_t)buf_len, "%s", reason);
+	return reason[0] ? 1 : 0;
 }
 
-void cam_fx_faceswap_set_params(cam_fx_t *, float, float, int, int)
+void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled)
 {
+	if (!fx || !fx->worker)
+		return;
+	try {
+		if ((enabled != 0) == fx->faceswapEnabled &&
+		    (!enabled || fx->swapPipeline))
+			return; // idempotent: state unchanged
+		if (enabled) {
+			if (!fx->swapPipeline) {
+				if (cam_fx_faceswap_available(fx) != 1)
+					return;
+				std::string yunet = yunetBundledPath();
+				if (yunet.empty())
+					return;
+				auto swap =
+					std::make_shared<fx::FaceSwapPipeline>(
+						yunet, inswapperCachePath(fx),
+						arcfaceCachePath(fx),
+						fx->threads,
+						cacheDir("providers"));
+				swap->setParams(fx->swapParams);
+				/* Missing source is fine: process() no-
+				 * swaps until one is set (hasSource). */
+				if (!fx->pendingLatent.empty())
+					swap->setSourceEmbedding(
+						fx->pendingLatent);
+				fx->swapPipeline = std::move(swap);
+				blog(LOG_INFO,
+				     "obs-cam-effects: face swap pipeline built");
+			}
+			fx->faceswapEnabled = true;
+		} else {
+			fx->faceswapEnabled = false;
+		}
+		installProcessor(fx);
+	} catch (const std::exception &e) {
+		blog(LOG_WARNING,
+		     "obs-cam-effects: face swap enable failed: %s", e.what());
+	} catch (...) {
+		blog(LOG_WARNING, "obs-cam-effects: face swap enable failed");
+	}
 }
 
-int cam_fx_try_get_frame(cam_fx_t *, const uint8_t **, int *, int *,
-			 uint64_t *)
+int cam_fx_faceswap_set_source(cam_fx_t *fx, const char *image_path)
 {
+	if (!fx || !image_path || image_path[0] == '\0')
+		return -1;
+	try {
+		if (!faceswapModelsPresent(fx))
+			return -1;
+		std::string yunet = yunetBundledPath();
+		if (yunet.empty())
+			return -1;
+		if (!fx->embedder)
+			fx->embedder = std::make_unique<fx::FaceEmbedder>(
+				arcfaceCachePath(fx), inswapperCachePath(fx),
+				fx->threads);
+		if (!fx->embedDetector)
+			fx->embedDetector =
+				std::make_unique<fx::YuNet>(yunet, fx->threads);
+		std::vector<float> latent =
+			fx->embedder->embedFromImageFile(image_path,
+							 *fx->embedDetector);
+		if (latent.empty()) {
+			blog(LOG_WARNING,
+			     "obs-cam-effects: face swap source: no usable face in %s",
+			     image_path);
+			return -1;
+		}
+		fx->pendingLatent = latent;
+		if (fx->swapPipeline) {
+			std::lock_guard<std::mutex> lk(*fx->swapM);
+			fx->swapPipeline->setSourceEmbedding(std::move(latent));
+		}
+		blog(LOG_INFO, "obs-cam-effects: face swap source set: %s",
+		     image_path);
+		return 0;
+	} catch (const std::exception &e) {
+		blog(LOG_WARNING,
+		     "obs-cam-effects: face swap source failed: %s",
+		     e.what());
+		return -1;
+	} catch (...) {
+		return -1;
+	}
+}
+
+void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity,
+				float sharpness, int preserve_mouth,
+				int watermark)
+{
+	if (!fx)
+		return;
+	try {
+		fx->swapParams.intensity = intensity;
+		fx->swapParams.sharpness = sharpness;
+		fx->swapParams.preserveMouth = preserve_mouth != 0;
+		fx->swapParams.watermark = watermark != 0;
+		if (fx->swapPipeline) {
+			std::lock_guard<std::mutex> lk(*fx->swapM);
+			fx->swapPipeline->setParams(fx->swapParams);
+		}
+	} catch (...) {
+	}
+}
+
+int cam_fx_try_get_frame(cam_fx_t *fx, const uint8_t **bgra, int *w, int *h,
+			 uint64_t *seq)
+{
+	if (!fx || !fx->worker || !bgra || !w || !h || !seq)
+		return 0;
+	try {
+		uint64_t s = 0;
+		fx::WorkerResult r = fx->worker->tryGetLatest(s);
+		if (!r.frame)
+			return 0;
+		if (s != fx->seenFrameSeq) {
+			fx->u8frame = r.frame->bgra;
+			fx->frameW = r.frame->width;
+			fx->frameH = r.frame->height;
+			fx->seenFrameSeq = s;
+		}
+		*bgra = fx->u8frame.data();
+		*w = fx->frameW;
+		*h = fx->frameH;
+		*seq = s;
+		return 1;
+	} catch (...) {
+		return 0;
+	}
+}
+
+int cam_fx_start_faceswap_download(cam_fx_t *fx)
+{
+	if (!fx)
+		return -1;
+	try {
+		fx::models_dl::State st = fx->downloader->state();
+		if (st == fx::models_dl::State::Downloading ||
+		    st == fx::models_dl::State::Verifying ||
+		    st == fx::models_dl::State::Extracting)
+			return -1; // another download is running
+		fx->fsChain = false;
+		fx->fsId.clear();
+		if (!fileExists(inswapperCachePath(fx))) {
+			if (startDownloadById(fx, "inswapper_128") != 0)
+				return -1;
+			fx->fsChain = true;
+			fx->fsId = "inswapper_128";
+			return 0;
+		}
+		if (!fileExists(arcfaceCachePath(fx))) {
+			if (startDownloadById(fx, "w600k_r50") != 0)
+				return -1;
+			fx->fsChain = true;
+			fx->fsId = "w600k_r50";
+			return 0;
+		}
+		return 0; // both already present: nothing to do
+	} catch (...) {
+		return -1;
+	}
+}
+
+int cam_fx_faceswap_download_state(cam_fx_t *fx, char *id_buf, int id_len,
+				   char *state_buf, int state_len,
+				   double *progress)
+{
+	if (!fx)
+		return -1;
+	try {
+		pumpFaceswapDownload(fx);
+	} catch (...) {
+	}
+	if (id_buf && id_len > 0)
+		snprintf(id_buf, (size_t)id_len, "%s", fx->fsId.c_str());
+	if (state_buf && state_len > 0)
+		snprintf(state_buf, (size_t)state_len, "%s",
+			 fx::models_dl::stateName(fx->downloader->state()));
+	if (progress)
+		*progress = fx->downloader->progress();
 	return 0;
 }
 

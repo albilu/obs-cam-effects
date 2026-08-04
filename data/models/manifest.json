@@ -27,6 +27,28 @@
         "onnxruntime-linux-x64-gpu_cuda13-1.28.0/lib/libonnxruntime_providers_shared.so"
       ],
       "notice": "NVIDIA CUDA execution provider for ONNX Runtime 1.28.0 (MIT). ~240 MB download, optional."
+    },
+    {
+      "id": "inswapper_128",
+      "kind": "model",
+      "tier": "faceswap",
+      "file": "inswapper_128.onnx",
+      "url": "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128.onnx",
+      "sha256": "e4a3f08c753cb72d04e10aa0f7dbe3deebbf39567d4ead6dce08e98aa49e16af",
+      "size": 554253681,
+      "license": "InsightFace non-commercial",
+      "notice": "inswapper_128 (InsightFace): licensed for NON-COMMERCIAL research use only. By downloading you accept these terms."
+    },
+    {
+      "id": "w600k_r50",
+      "kind": "model",
+      "tier": "faceswap",
+      "file": "w600k_r50.onnx",
+      "url": "https://huggingface.co/hacksider/deep-live-cam/resolve/main/buffalo_l/buffalo_l/w600k_r50.onnx",
+      "sha256": "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43",
+      "size": 174383860,
+      "license": "InsightFace non-commercial",
+      "notice": "ArcFace w600k_r50 (InsightFace): licensed for NON-COMMERCIAL research use only. By downloading you accept these terms."
     }
   ]
 }

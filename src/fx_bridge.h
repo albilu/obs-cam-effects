@@ -74,14 +74,50 @@ uint64_t cam_fx_fps(cam_fx_t *fx);
  * Returns 0 on success, -1 on NULL fx. */
 int cam_fx_backend(cam_fx_t *fx, char *buf, int buf_len);
 
-/* Face swap controls (Task 7 wires them into the filter). */
-int cam_fx_faceswap_available(cam_fx_t *fx); // 1 if models+CUDA ready
+/* --- Face swap --- */
+
+/* 1 when both face-swap models are in the models cache AND CUDA
+ * acceleration is usable, else 0. */
+int cam_fx_faceswap_available(cam_fx_t *fx);
+
+/* Why face swap is unavailable: "models not downloaded" /
+ * "no GPU acceleration", or "" when available. Returns 1 when
+ * something is missing, 0 when available. */
+int cam_fx_faceswap_missing(cam_fx_t *fx, char *buf, int buf_len);
+
+/* Enables/disables face swap. The swap pipeline is built lazily on
+ * the first enable and building is a no-op while unavailable. */
+void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled);
+
+/* Sets the source face from an image file (jpg/png). Returns 0 on
+ * success, -1 on failure (no usable face, unreadable file, models
+ * missing). */
 int cam_fx_faceswap_set_source(cam_fx_t *fx, const char *image_path);
+
+/* Live swap params (see fx::FaceSwapParams). */
 void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity,
 				float sharpness, int preserve_mouth,
 				int watermark);
+
+/* Fetches the latest processed (swapped) frame. Returns 1 if a frame
+ * exists, 0 otherwise. On success *bgra points to an internal w*h*4
+ * uint8 buffer valid until the next call, and *seq is the result
+ * sequence number (shared with the mask seq). */
 int cam_fx_try_get_frame(cam_fx_t *fx, const uint8_t **bgra, int *w,
 			 int *h, uint64_t *seq);
+
+/* Starts the 2-stage face-swap download (inswapper_128, then
+ * w600k_r50); stages whose file already exists are skipped. Returns 0
+ * on start or when nothing is needed, -1 if busy/invalid. */
+int cam_fx_start_faceswap_download(cam_fx_t *fx);
+
+/* Face-swap download status: current stage id via id_buf ("" when the
+ * chain is idle), state string via state_buf (one of idle/downloading/
+ * verifying/extracting/done/error), progress 0..1 or -1. Advances the
+ * stage chain. Returns 0. */
+int cam_fx_faceswap_download_state(cam_fx_t *fx, char *id_buf, int id_len,
+				   char *state_buf, int state_len,
+				   double *progress);
 
 #ifdef __cplusplus
 }

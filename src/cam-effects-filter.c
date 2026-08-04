@@ -18,6 +18,12 @@
 #define SETTING_MASK_CONTOUR "mask_contour"
 #define SETTING_MASK_FEATHER "mask_feather"
 #define SETTING_MASK_TEMPORAL "mask_temporal"
+#define SETTING_FACE_SWAP "face_swap"
+#define SETTING_FACE_IMAGE "face_image"
+#define SETTING_SWAP_INTENSITY "swap_intensity"
+#define SETTING_SWAP_SHARPNESS "swap_sharpness"
+#define SETTING_SWAP_PRESERVE_MOUTH "swap_preserve_mouth"
+#define SETTING_SWAP_WATERMARK "swap_watermark"
 
 #define STAGE_SIZE 192
 #define MASK_STALE_MS 1000
@@ -75,10 +81,14 @@ struct cam_effects_filter {
 	atomic_int failure_id; /* enum cam_failure */
 	int blur_strength;
 	int tier;	    /* 0=auto, 1=lite, 2=standard, 3=quality */
-	char status[512];
+	char status[768];
 	char *image_path;
 	gs_image_file_t bg_image;
 	bool bg_loaded;
+
+	bool face_swap;
+	char *face_image_path;	  /* current setting */
+	char *face_image_applied; /* last path applied to the bridge */
 };
 
 /* Forward declarations (used before definition below). */
@@ -155,6 +165,8 @@ static void cam_effects_destroy(void *data)
 		cam_fx_destroy(filter->fx);
 	cam_effects_destroy_graphics(filter);
 	bfree(filter->image_path);
+	bfree(filter->face_image_path);
+	bfree(filter->face_image_applied);
 	bfree(filter);
 }
 
@@ -202,11 +214,48 @@ static void cam_effects_compose_status(struct cam_effects_filter *filter)
 	else
 		snprintf(fps_text, sizeof(fps_text), "warming up…");
 
+	/* Face-swap state: download stage/progress while the chain is
+	 * active, else availability and on/off. Unavailability never
+	 * affects the background modes above. */
+	char fs_id[64] = {0};
+	char fs_state[32] = {0};
+	double fs_prog = -1.0;
+	cam_fx_faceswap_download_state(filter->fx, fs_id, sizeof(fs_id),
+				       fs_state, sizeof(fs_state), &fs_prog);
+	bool fs_busy = fs_id[0] != '\0' &&
+		       (strcmp(fs_state, "downloading") == 0 ||
+			strcmp(fs_state, "verifying") == 0 ||
+			strcmp(fs_state, "extracting") == 0);
+	char fs_text[192];
+	if (fs_busy && fs_prog >= 0.0)
+		snprintf(fs_text, sizeof(fs_text),
+			 "Face swap: downloading %s %.0f%%", fs_id,
+			 fs_prog * 100.0);
+	else if (fs_busy)
+		snprintf(fs_text, sizeof(fs_text), "Face swap: %s %s",
+			 fs_state, fs_id);
+	else if (fs_id[0] != '\0' && strcmp(fs_state, "error") == 0) {
+		char fs_err[96] = {0};
+		cam_fx_download_error(filter->fx, fs_err, sizeof(fs_err));
+		snprintf(fs_text, sizeof(fs_text),
+			 "Face swap: download error: %s",
+			 fs_err[0] ? fs_err : "unknown");
+	} else if (cam_fx_faceswap_available(filter->fx))
+		snprintf(fs_text, sizeof(fs_text), "Face swap: %s",
+			 filter->face_swap ? "on" : "off");
+	else {
+		char reason[96] = {0};
+		cam_fx_faceswap_missing(filter->fx, reason, sizeof(reason));
+		snprintf(fs_text, sizeof(fs_text),
+			 "Face swap: unavailable (%s)",
+			 reason[0] ? reason : "unknown");
+	}
+
 	snprintf(filter->status, sizeof(filter->status),
-		 "Quality model: %s | Download: %s | Backend: %s | %s",
+		 "Quality model: %s | Download: %s | Backend: %s | %s | %s",
 		 cam_fx_quality_available(filter->fx) ? "downloaded"
 						      : "not downloaded",
-		 dl_text, backend, fps_text);
+		 dl_text, backend, fps_text, fs_text);
 }
 
 static bool cam_effects_download_rvm_clicked(obs_properties_t *props,
@@ -232,6 +281,20 @@ static bool cam_effects_download_cuda_clicked(obs_properties_t *props,
 	struct cam_effects_filter *filter = data;
 	if (filter && filter->fx) {
 		cam_fx_start_download(filter->fx, "ort_cuda_ep_1.28.0");
+		cam_effects_compose_status(filter);
+	}
+	return true;
+}
+
+static bool cam_effects_download_faceswap_clicked(obs_properties_t *props,
+						  obs_property_t *property,
+						  void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(property);
+	struct cam_effects_filter *filter = data;
+	if (filter && filter->fx) {
+		cam_fx_start_faceswap_download(filter->fx);
 		cam_effects_compose_status(filter);
 	}
 	return true;
@@ -265,6 +328,19 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 	float mask_temporal =
 		(float)obs_data_get_double(settings, SETTING_MASK_TEMPORAL);
 
+	filter->face_swap = obs_data_get_bool(settings, SETTING_FACE_SWAP);
+	bfree(filter->face_image_path);
+	filter->face_image_path =
+		bstrdup(obs_data_get_string(settings, SETTING_FACE_IMAGE));
+	float swap_intensity =
+		(float)obs_data_get_double(settings, SETTING_SWAP_INTENSITY);
+	float swap_sharpness =
+		(float)obs_data_get_double(settings, SETTING_SWAP_SHARPNESS);
+	bool swap_preserve_mouth =
+		obs_data_get_bool(settings, SETTING_SWAP_PRESERVE_MOUTH);
+	bool swap_watermark =
+		obs_data_get_bool(settings, SETTING_SWAP_WATERMARK);
+
 	/* Free any previous background image (destroys its texture, so
 	 * inside the graphics lock). */
 	obs_enter_graphics();
@@ -285,12 +361,14 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 		obs_leave_graphics();
 	}
 
-	/* Create the inference engine lazily on first non-off mode.
-	 * The graphics lock synchronizes the publication of filter->fx
-	 * with the render thread. */
+	/* Create the inference engine lazily on first non-off mode (or
+	 * when face swap is on: it shares the same engine). The graphics
+	 * lock synchronizes the publication of filter->fx with the
+	 * render thread. */
 	if (!filter->fx &&
-	    atomic_load_explicit(&filter->mode_id, memory_order_relaxed) !=
-		    MODE_OFF) {
+	    (atomic_load_explicit(&filter->mode_id, memory_order_relaxed) !=
+		     MODE_OFF ||
+	     filter->face_swap)) {
 		char *lite = obs_module_file("models/selfie_segmentation.onnx");
 		char *standard =
 			obs_module_file("models/pphumanseg_fp32.onnx");
@@ -316,6 +394,31 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 		cam_fx_set_mask_params(filter->fx, mask_threshold,
 				       mask_contour, mask_feather,
 				       mask_temporal);
+
+		/* Face swap: params every call (cheap); the source
+		 * embedding only when the path changed (it runs
+		 * detect+ArcFace on this thread); enable last so a
+		 * lazy build picks up params + pending source. */
+		cam_fx_faceswap_set_params(filter->fx, swap_intensity,
+					   swap_sharpness,
+					   swap_preserve_mouth ? 1 : 0,
+					   swap_watermark ? 1 : 0);
+		bool src_changed =
+			(filter->face_image_applied == NULL) !=
+				(filter->face_image_path == NULL) ||
+			(filter->face_image_applied && filter->face_image_path &&
+			 strcmp(filter->face_image_applied,
+				filter->face_image_path) != 0);
+		if (src_changed) {
+			if (filter->face_image_path[0] != '\0')
+				cam_fx_faceswap_set_source(
+					filter->fx, filter->face_image_path);
+			bfree(filter->face_image_applied);
+			filter->face_image_applied =
+				bstrdup(filter->face_image_path);
+		}
+		cam_fx_faceswap_set_enabled(filter->fx,
+					    filter->face_swap ? 1 : 0);
 	}
 	cam_effects_compose_status(filter);
 }
@@ -330,6 +433,13 @@ static void cam_effects_get_defaults(obs_data_t *settings)
 	obs_data_set_default_double(settings, SETTING_MASK_CONTOUR, 0.0);
 	obs_data_set_default_double(settings, SETTING_MASK_FEATHER, 0.0);
 	obs_data_set_default_double(settings, SETTING_MASK_TEMPORAL, 0.6);
+	obs_data_set_default_bool(settings, SETTING_FACE_SWAP, false);
+	obs_data_set_default_string(settings, SETTING_FACE_IMAGE, "");
+	obs_data_set_default_double(settings, SETTING_SWAP_INTENSITY, 1.0);
+	obs_data_set_default_double(settings, SETTING_SWAP_SHARPNESS, 0.0);
+	obs_data_set_default_bool(settings, SETTING_SWAP_PRESERVE_MOUTH,
+				  false);
+	obs_data_set_default_bool(settings, SETTING_SWAP_WATERMARK, true);
 }
 
 static obs_properties_t *cam_effects_properties(void *data)
@@ -399,6 +509,47 @@ static obs_properties_t *cam_effects_properties(void *data)
 		props, "download_cuda_btn",
 		"Download GPU acceleration (MIT, ~240 MB)",
 		cam_effects_download_cuda_clicked);
+
+	/* --- Face swap --- */
+	bool fs_available = filter && filter->fx &&
+			    cam_fx_faceswap_available(filter->fx) == 1;
+	obs_property_t *fs_toggle = obs_properties_add_bool(
+		props, SETTING_FACE_SWAP, "Face swap (GPU required)");
+	if (filter && filter->fx && !fs_available)
+		obs_property_set_enabled(fs_toggle, false);
+	obs_properties_add_path(props, SETTING_FACE_IMAGE,
+				"Source face image", OBS_PATH_FILE,
+				"Images (*.png *.jpg *.jpeg *.bmp)", NULL);
+	obs_properties_add_float_slider(props, SETTING_SWAP_INTENSITY,
+					"Swap intensity", 0.0, 1.0, 0.05);
+	obs_properties_add_float_slider(props, SETTING_SWAP_SHARPNESS,
+					"Swap sharpness", 0.0, 1.0, 0.05);
+	obs_properties_add_bool(props, SETTING_SWAP_PRESERVE_MOUTH,
+				"Preserve original mouth");
+	obs_properties_add_bool(props, SETTING_SWAP_WATERMARK,
+				"AI disclosure badge (recommended)");
+
+	char fs_notice[768];
+	snprintf(fs_notice, sizeof(fs_notice), "%s",
+		 "Face swap models are licensed for NON-COMMERCIAL research "
+		 "use only (InsightFace). Use only faces you have "
+		 "rights/consent to use. Output is AI-generated; a "
+		 "disclosure badge is applied by default (EU AI Act "
+		 "Art. 50).");
+	if (filter && filter->fx && !fs_available) {
+		char reason[128] = {0};
+		cam_fx_faceswap_missing(filter->fx, reason, sizeof(reason));
+		size_t len = strlen(fs_notice);
+		snprintf(fs_notice + len, sizeof(fs_notice) - len,
+			 " Currently unavailable: %s.",
+			 reason[0] ? reason : "unknown");
+	}
+	obs_properties_add_text(props, "faceswap_notice", fs_notice,
+				OBS_TEXT_INFO);
+	obs_properties_add_button(
+		props, "download_faceswap_btn",
+		"Download face swap models (non-commercial, 730 MB)",
+		cam_effects_download_faceswap_clicked);
 
 	/* OBS calls get_properties every time the properties dialog
 	 * opens: recompose the status from live bridge state so the
