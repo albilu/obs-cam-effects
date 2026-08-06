@@ -11,6 +11,7 @@
 #include <obs-module.h>
 #include <util/platform.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -145,11 +146,23 @@ struct cam_fx {
 	fx::FaceSwapParams swapParams;
 	std::vector<float> pendingLatent; // source set before pipeline built
 	bool faceswapEnabled = false;
+	/* Background mode != off, mirrored for the worker's swap-then-seg
+	 * processor (shared_ptr like swapM: the capturing lambda must
+	 * outlive the bridge). When false the fs processor skips the
+	 * segmentation run and publishes a null-mask bundle. */
+	std::shared_ptr<std::atomic<bool>> bgActive =
+		std::make_shared<std::atomic<bool>>(true);
 
 	/* 2-stage face-swap download chain (inswapper_128_fp16 ->
-	 * w600k_r50): fsId is the current stage ("" when idle). */
+	 * w600k_r50): fsId is the current stage ("" when idle). fsChainM
+	 * guards both fields: pumpFaceswapDownload runs on the render
+	 * thread (cam_fx_faceswap_available is polled every frame while
+	 * face swap is on) AND on the UI thread (status getters), and
+	 * fsId is a heap-allocated string — an unsynchronized read/write
+	 * pair is a use-after-free. */
 	std::string fsId;
 	bool fsChain = false;
+	std::mutex fsChainM;
 
 	/* Kind of the most recent download started via this bridge: the
 	 * provider payload only takes effect after an OBS restart, so the
@@ -247,15 +260,22 @@ void installProcessor(cam_fx *fx)
 	if (fx->faceswapEnabled && fx->swapPipeline) {
 		std::shared_ptr<fx::FaceSwapPipeline> swap = fx->swapPipeline;
 		std::shared_ptr<std::mutex> m = fx->swapM;
+		std::shared_ptr<std::atomic<bool>> bg = fx->bgActive;
 		fx->worker->setProcessor(
-			[seg, swap, m](const fx::Frame &frame) {
+			[seg, swap, m, bg](const fx::Frame &frame) {
 				fx::Frame work = frame;
 				{
 					std::lock_guard<std::mutex> lk(*m);
 					swap->process(work);
 				}
 				fx::WorkerResult r;
-				r.mask = seg->process(work);
+				/* The mask only feeds the background
+				 * composite — skip the segmentation run
+				 * (2-6ms/frame) when background is off; the
+				 * fs-only composite draws the swapped frame
+				 * directly and tolerates the null mask. */
+				if (bg->load(std::memory_order_relaxed))
+					r.mask = seg->process(work);
 				r.frame = std::make_shared<const fx::Frame>(
 					std::move(work));
 				return r;
@@ -417,27 +437,38 @@ int startDownloadById(cam_fx *fx, const char *id)
 /* Drives the 2-stage face-swap chain: when inswapper_128_fp16
  * completes, w600k_r50 starts (skipped when its file already exists).
  * Called from the status getters, so every UI poll advances the chain.
- * On error the chain stops with fsId on the failed stage. */
+ * On error the chain stops with fsId on the failed stage.
+ * Threading: fsId/fsChain are copied/updated under fsChainM; the lock
+ * is never held across Downloader calls. */
 void pumpFaceswapDownload(cam_fx *fx)
 {
-	if (!fx->fsChain)
-		return;
+	std::string stage;
+	{
+		std::lock_guard<std::mutex> lk(fx->fsChainM);
+		if (!fx->fsChain)
+			return;
+		stage = fx->fsId;
+	}
 	fx::models_dl::State st = fx->downloader->state();
 	if (st == fx::models_dl::State::Error) {
+		std::lock_guard<std::mutex> lk(fx->fsChainM);
 		fx->fsChain = false;
 		return;
 	}
 	if (st != fx::models_dl::State::Done)
 		return;
-	if (fx->fsId == "inswapper_128_fp16") {
+	if (stage == "inswapper_128_fp16") {
 		if (!fileExists(arcfaceCachePath(fx)) &&
 		    startDownloadById(fx, "w600k_r50") == 0) {
+			std::lock_guard<std::mutex> lk(fx->fsChainM);
 			fx->fsId = "w600k_r50";
 			return;
 		}
+		std::lock_guard<std::mutex> lk(fx->fsChainM);
 		fx->fsChain = false;
 		fx->fsId.clear();
-	} else if (fx->fsId == "w600k_r50") {
+	} else if (stage == "w600k_r50") {
+		std::lock_guard<std::mutex> lk(fx->fsChainM);
 		fx->fsChain = false;
 		fx->fsId.clear();
 	}
@@ -673,6 +704,13 @@ int cam_fx_backend(cam_fx_t *fx, char *buf, int buf_len)
 	return 0;
 }
 
+void cam_fx_set_background_active(cam_fx_t *fx, int active)
+{
+	if (!fx)
+		return;
+	fx->bgActive->store(active != 0, std::memory_order_relaxed);
+}
+
 int cam_fx_faceswap_available(cam_fx_t *fx)
 {
 	if (!fx)
@@ -849,14 +887,18 @@ int cam_fx_start_faceswap_download(cam_fx_t *fx)
 		    st == fx::models_dl::State::Verifying ||
 		    st == fx::models_dl::State::Extracting)
 			return -1; // another download is running
-		fx->fsChain = false;
-		fx->fsId.clear();
+		{
+			std::lock_guard<std::mutex> lk(fx->fsChainM);
+			fx->fsChain = false;
+			fx->fsId.clear();
+		}
 		/* No usable inswapper (neither fp16 nor fp32): fetch the
 		 * fp16 default. */
 		if (!fileExists(inswapperFp16CachePath(fx)) &&
 		    !fileExists(inswapperFp32CachePath(fx))) {
 			if (startDownloadById(fx, "inswapper_128_fp16") != 0)
 				return -1;
+			std::lock_guard<std::mutex> lk(fx->fsChainM);
 			fx->fsChain = true;
 			fx->fsId = "inswapper_128_fp16";
 			return 0;
@@ -864,6 +906,7 @@ int cam_fx_start_faceswap_download(cam_fx_t *fx)
 		if (!fileExists(arcfaceCachePath(fx))) {
 			if (startDownloadById(fx, "w600k_r50") != 0)
 				return -1;
+			std::lock_guard<std::mutex> lk(fx->fsChainM);
 			fx->fsChain = true;
 			fx->fsId = "w600k_r50";
 			return 0;
@@ -884,8 +927,13 @@ int cam_fx_faceswap_download_state(cam_fx_t *fx, char *id_buf, int id_len,
 		pumpFaceswapDownload(fx);
 	} catch (...) {
 	}
+	std::string stage;
+	{
+		std::lock_guard<std::mutex> lk(fx->fsChainM);
+		stage = fx->fsId;
+	}
 	if (id_buf && id_len > 0)
-		snprintf(id_buf, (size_t)id_len, "%s", fx->fsId.c_str());
+		snprintf(id_buf, (size_t)id_len, "%s", stage.c_str());
 	if (state_buf && state_len > 0)
 		snprintf(state_buf, (size_t)state_len, "%s",
 			 fx::models_dl::stateName(fx->downloader->state()));

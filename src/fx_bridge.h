@@ -82,6 +82,12 @@ uint64_t cam_fx_fps(cam_fx_t *fx);
  * Returns 0 on success, -1 on NULL fx. */
 int cam_fx_backend(cam_fx_t *fx, char *buf, int buf_len);
 
+/* Tells the bridge whether a background mode is active (1) or off (0).
+ * When face swap runs with background off, the worker skips the
+ * segmentation pass and publishes the swapped frame with a null mask
+ * (the fs-only composite does not use a mask). Cheap and idempotent. */
+void cam_fx_set_background_active(cam_fx_t *fx, int active);
+
 /* --- Face swap --- */
 
 /* 1 when both face-swap models are in the models cache AND CUDA

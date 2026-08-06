@@ -7,10 +7,15 @@
 /* RECORDED VALUES — from a verified-good run of this exact test on
  * ORT 1.28.0 / pphumanseg_fp32.onnx (single process() call, fresh
  * pipeline, so EMA is identity). Verified identical across two
- * consecutive runs of the same binary. */
-static constexpr double GOLDEN_MEAN = 0.26034758069342356;
-static constexpr double GOLDEN_VAR = 0.18238129331059641;
-static constexpr uint64_t GOLDEN_CHECKSUM = 9536951122226537109ULL;
+ * consecutive runs of the same binary.
+ * Re-recorded 2026-08-06: the guided filter no longer skips when the
+ * frame is larger than the mask (the guide is bilinear-downsampled to
+ * the mask size instead — face-swap full-res path fix); this 640x360
+ * frame exercises that path, so the anchor moved (mean +1.4e-4,
+ * var -0.011: edge refinement only, no model/preprocessing change). */
+static constexpr double GOLDEN_MEAN = 0.26048354202991231;
+static constexpr double GOLDEN_VAR = 0.17131057637576308;
+static constexpr uint64_t GOLDEN_CHECKSUM = 17132282525886879474ULL;
 
 /* Golden anchor: fixed synthetic frame -> pipeline -> mask statistics.
  * The expected values were recorded from a verified-good run (see plan);

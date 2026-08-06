@@ -427,6 +427,16 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 		cam_fx_set_mask_params(filter->fx, mask_threshold,
 				       mask_contour, mask_feather,
 				       mask_temporal);
+		/* fs + background off skips the per-frame segmentation
+		 * run in the worker (the composite draws the swapped
+		 * frame directly). */
+		cam_fx_set_background_active(
+			filter->fx,
+			atomic_load_explicit(&filter->mode_id,
+					     memory_order_relaxed) !=
+					MODE_OFF
+				? 1
+				: 0);
 
 		/* Face swap: params every call (cheap); the source
 		 * embedding only when the path changed (it runs
@@ -443,12 +453,18 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 			 strcmp(filter->face_image_applied,
 				filter->face_image_path) != 0);
 		if (src_changed) {
+			int rc = 0;
 			if (filter->face_image_path[0] != '\0')
-				cam_fx_faceswap_set_source(
+				rc = cam_fx_faceswap_set_source(
 					filter->fx, filter->face_image_path);
-			bfree(filter->face_image_applied);
-			filter->face_image_applied =
-				bstrdup(filter->face_image_path);
+			/* Latch the applied path only on success, so
+			 * re-selecting the same file retries after a
+			 * failed embed. */
+			if (rc == 0) {
+				bfree(filter->face_image_applied);
+				filter->face_image_applied =
+					bstrdup(filter->face_image_path);
+			}
 		}
 		cam_fx_faceswap_set_enabled(filter->fx, face_swap ? 1 : 0);
 	}

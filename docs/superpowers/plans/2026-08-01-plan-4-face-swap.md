@@ -880,11 +880,11 @@ git commit -m "docs: plan 4 closeout notes"
 
 ## Plan 4 Definition of Done
 
-- [ ] Full ctest suite green (align, emap, yunet, embedder, pipeline, worker bundle)
-- [ ] Face swap models downloadable via manifest with non-commercial notices
-- [ ] Swap works in OBS on the RTX 5070 (user-verified) with watermark visible
-- [ ] Background modes compose on top of the swapped face
-- [ ] Amendment-9 settings all functional (intensity/sharpness/mouth/watermark)
-- [ ] Failure modes cover face swap (passthrough/freeze incl. watermark in frozen frames)
-- [ ] Bench numbers recorded (YuNet + inswapper, CPU vs CUDA)
-- [ ] Git history: one commit per task, clean tree
+- [x] Full ctest suite green (align, emap, yunet, embedder, pipeline, worker bundle)
+- [x] Face swap models downloadable via manifest with non-commercial notices
+- [x] Swap works in OBS on the RTX 5070 (user-verified) with watermark visible
+- [x] Background modes compose on top of the swapped face
+- [x] Amendment-9 settings all functional (intensity/sharpness/mouth/watermark)
+- [x] Failure modes cover face swap (passthrough/freeze incl. watermark in frozen frames)
+- [x] Bench numbers recorded (YuNet + inswapper, CPU vs CUDA)
+- [x] Git history: one commit per task, clean tree

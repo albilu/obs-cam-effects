@@ -135,6 +135,19 @@ merge against this base.
     persistent license notice + click-to-download.
   - mask threshold binarize has no direct unit test (contour/feather/EMA
     do); trivial code, user-verified.
+  - Plan 5 notes (from Plan 4 final review): no CMake install() rules
+    yet for libonnxruntime.so.1.28.0 or the CMake-downloaded models
+    (pphumanseg/selfie/yunet) — a .deb today would ship only the
+    manifest. YuNet lacks a .license companion download (other bundled
+    models have one). The GPU-build download overlays into the plugin
+    bin dir — root-owned under .deb, read-only under Flatpak (fails
+    cleanly with "overlay install failed"); needs a packaging-time
+    decision (system CUDA packaging vs user-space download). CUDA 13 +
+    cuDNN 9 host requirement must land in release notes.
+  - Face-swap 2-stage download chain advances only when the properties
+    dialog is open (poll-driven); w600k stage waits for a dialog open.
+  - Downloader dtor can hang filter removal until curl exits (bounded
+    ≤30s stall / 30min cap); true kill-on-cancel is a follow-up.
 
 ## Plan 4 state (face swap)
 
