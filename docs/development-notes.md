@@ -89,24 +89,29 @@ merge against this base.
   ~/.config/obs-cam-effects/{models,providers}.
 - Advanced mask settings (amendment 9): threshold / contour / feather /
   temporal smoothing, all wired through the pipeline.
-- Status line: composed at dialog open (get_properties) + Refresh
-  button; shows active model, tier setting, model state, download state,
-  backend, fps. fps counter verified live (29-35fps with camera running).
-- CUDA: provider package (240MB, MIT) downloads + registers on RTX 5070
-  via ORT 1.28 plugin-EP API. RESOLVED 2026-07-30 after installing
-  cudnn9-cuda-13 (9.24) + CUDA 13.3 runtime libs: **CUDA inference works
-  for PP-HumanSeg (2.05ms, 488fps — 3x CPU) and MediaPipe (1.96ms,
-  511fps)**. Two production fixes came out of it: (1) IoBinding —
-  raw Run() returns device-resident tensors on CUDA; host deref
-  segfaulted, now outputs are bound to CPU memory so ORT copies back;
-  (2) RVM pinned to CPU — the ORT 1.28 CUDA EP hard-segfaults on RVM's
-  dynamic 6-in/6-out graph on Blackwell sm_120 (uncatchable; lazy
-  fallback can't help; CPU is 57fps anyway). Re-test RVM on CUDA after
-  ORT/cuDNN updates.
+- Status line: composed at dialog open (get_properties); shows quality
+  model state, download state (+ error text), backend, fps. The refresh
+  button and modified_callback live-refresh were tried and REMOVED —
+  OBS cannot reliably repaint an open properties dialog; status refreshes
+  on dialog open only (user decision).
+- CUDA (final, 2026-08-06): the ORT 1.28 plugin-EP-V2 path
+  (RegisterExecutionProviderLibrary + AppendExecutionProvider_V2)
+  SIGSEGVs on inswapper/RVM on both GPUs here — abandoned. The classic
+  API (OrtSessionOptionsAppendExecutionProvider_CUDA, dlsym-probed: the
+  symbol exists only in the GPU build's main lib) + the full ORT GPU
+  build runs EVERYTHING (inswapper 15.75ms, RVM 2.62ms, PP-HumanSeg
+  2.05ms, MediaPipe 1.96ms, YuNet 1.58ms on the RTX 5070). The GPU build
+  is an optional 240MB manifest download that drops into the plugin bin
+  dir (same SONAME = drop-in); one OBS restart enables it. The RVM CPU
+  pin is lifted (BUG-1 in rvm.cpp marked historical). See
+  docs/benchmarks.md "CUDA path history" for the full timeline.
 - CUDA runtime requirement for users: CUDA 13 runtime (cudart/cublas/
-  curand) + cuDNN 9 on the loader path. The 240MB ORT provider package
-  alone is NOT enough. On this machine the runtime lives extracted at
-  ~/.local/lib/cuda13 (needs LD_LIBRARY_PATH for OBS to use CUDA).
+  curand) + cuDNN 9 on the loader path (system-wide on this machine via
+  the NVIDIA debs; the extracted ~/.local/lib/cuda13 copy was removed).
+  The 240MB ORT download alone is NOT enough.
+- The ~/.config/obs-cam-effects/providers dir is now write-only scratch
+  (the old plugin-EP provider-libs flow is gone; the dir may still hold
+  stale provider libs from it — harmless; cleanup candidate).
 - Follow-ups:
   - Surface ORT/cuDNN error text through EpProbe to the status line
     (currently catch(...) swallows the reason).

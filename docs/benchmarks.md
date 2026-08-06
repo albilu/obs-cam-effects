@@ -44,7 +44,7 @@ Fixture: `tests/data/face-test.jpg` (640×799, real face, detection score 0.95).
 | Stage | CPU | CUDA (RTX 5070) | Notes |
 |---|---|---|---|
 | YuNet 2023mar — detect (full path) | **10.21 ms** | — | fx::YuNet detect stays CPU by design |
-| YuNet 2023mar — model only | 4.97 ms | **1.58 ms** | raw OrtModel; **3.1× speedup** |
+| YuNet 2023mar — model only | 7.33 ms* | **1.58 ms** | raw OrtModel; **4.6× speedup**. *CPU figure re-measured by independent review (stable 7.33 ms); the original 4.97 ms was not reproducible |
 | inswapper_128 — model only | 1245.96 ms | **15.75 ms** | **79× speedup — works on the classic API** (plugin-EP-V2 SIGSEGV'd on first Run) |
 | FaceSwapPipeline end-to-end | 1271.61 ms (0.8 fps) | **41.00 ms (24.4 fps)** | detect CPU + swap CUDA + paste-back |
 
