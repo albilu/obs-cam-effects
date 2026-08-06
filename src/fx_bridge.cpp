@@ -56,6 +56,22 @@ std::string cacheDir(const char *sub)
 	       "/.config/obs-cam-effects/" + sub;
 }
 
+/* Directory containing the running plugin .so (e.g.
+ * <plugin-dir>/bin/64bit). The GPU ORT build must land here: the
+ * plugin's $ORIGIN RPATH loads libonnxruntime from this dir, and the
+ * GPU build's provider libs resolve via their own $ORIGIN.
+ * obs_get_module_binary_path returns the full path of the module FILE
+ * (obs-module.c: mod.bin_path = bstrdup(path) of the .so), so the last
+ * component is stripped. Empty when the module is not registered. */
+std::string pluginBinDir()
+{
+	const char *p = obs_get_module_binary_path(obs_current_module());
+	std::string path = p ? p : "";
+	size_t slash = path.find_last_of('/');
+	return slash != std::string::npos ? path.substr(0, slash)
+					  : std::string();
+}
+
 /* libobs' obs_data JSON parser drops primitive array items, so the
  * "extract" string list is collected from the raw manifest text
  * (controlled, hand-written JSON). */
@@ -134,6 +150,11 @@ struct cam_fx {
 	 * fsId is the current stage ("" when the chain is idle). */
 	std::string fsId;
 	bool fsChain = false;
+
+	/* Kind of the most recent download started via this bridge: the
+	 * provider payload only takes effect after an OBS restart, so the
+	 * Done status for it carries a restart hint. */
+	bool dlLastProvider = false;
 
 	uint64_t seenFrameSeq = 0;
 	std::vector<uint8_t> u8frame;
@@ -243,8 +264,10 @@ bool buildAndSwap(cam_fx *fx, fx::SegTier tier)
 		fx->pipeline = p;
 		fx->tierInEffect = (int)tier + 1;
 		static const char *names[] = {"lite", "standard", "quality"};
-		blog(LOG_INFO, "obs-cam-effects: pipeline tier in effect: %s",
-		     names[(int)tier]);
+		blog(LOG_INFO,
+		     "obs-cam-effects: pipeline tier in effect: %s (backend: %s)",
+		     names[(int)tier],
+		     fx::EpProbe::backendName(p->usesCuda()));
 		installProcessor(fx);
 		return true;
 	} catch (const std::exception &e) {
@@ -335,9 +358,27 @@ int startDownloadById(cam_fx *fx, const char *id)
 		 * drift) — refuse. */
 		if (entry->extract.empty())
 			return -1;
+		/* The enabling payload is the GPU build's main
+		 * libonnxruntime.so.1.28.0 — it must land in the plugin
+		 * BIN DIR (the $ORIGIN the plugin .so resolves
+		 * libonnxruntime.so.1 from), replacing the bundled CPU
+		 * build. Overlay mode: the bin dir also holds the plugin
+		 * .so itself, so the downloader's whole-dir swap would
+		 * wipe it; per-file rename is also safe against the
+		 * running process's mapped lib. */
+		std::string binDir = pluginBinDir();
+		if (binDir.empty()) {
+			blog(LOG_WARNING,
+			     "obs-cam-effects: provider download refused: plugin bin dir unknown");
+			return -1;
+		}
+		blog(LOG_INFO,
+		     "obs-cam-effects: provider extracts into plugin bin dir %s",
+		     binDir.c_str());
 		req.destPath = cacheDir("providers") + "/" + entry->id + ".tgz";
 		req.extractMembers = entry->extract;
-		req.extractDestDir = cacheDir("providers");
+		req.extractDestDir = binDir;
+		req.extractOverlay = true;
 		/* The provider tar nests the .so files under
 		 * <pkg>/lib/: strip 2 components so they land flat. */
 		req.stripComponents = 2;
@@ -346,6 +387,7 @@ int startDownloadById(cam_fx *fx, const char *id)
 	}
 	try {
 		fx->downloader->start(req);
+		fx->dlLastProvider = entry->kind == "provider";
 		blog(LOG_INFO, "obs-cam-effects: download started: %s",
 		     entry->id.c_str());
 		return 0;
@@ -554,9 +596,17 @@ int cam_fx_download_state(cam_fx_t *fx, char *buf, int buf_len,
 		pumpFaceswapDownload(fx);
 	} catch (...) {
 	}
-	if (buf && buf_len > 0)
+	if (buf && buf_len > 0) {
+		fx::models_dl::State st = fx->downloader->state();
+		/* The provider payload (GPU ORT build) only takes effect
+		 * on the next process start — say so explicitly. */
+		const bool providerDone =
+			st == fx::models_dl::State::Done && fx->dlLastProvider;
 		snprintf(buf, (size_t)buf_len, "%s",
-			 fx::models_dl::stateName(fx->downloader->state()));
+			 providerDone
+				 ? "done — restart OBS to enable GPU acceleration"
+				 : fx::models_dl::stateName(st));
+	}
 	if (progress)
 		*progress = fx->downloader->progress();
 	return 0;

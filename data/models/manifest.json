@@ -23,10 +23,11 @@
       "size": 240874643,
       "license": "MIT",
       "extract": [
+        "onnxruntime-linux-x64-gpu_cuda13-1.28.0/lib/libonnxruntime.so.1.28.0",
         "onnxruntime-linux-x64-gpu_cuda13-1.28.0/lib/libonnxruntime_providers_cuda.so",
         "onnxruntime-linux-x64-gpu_cuda13-1.28.0/lib/libonnxruntime_providers_shared.so"
       ],
-      "notice": "NVIDIA CUDA execution provider for ONNX Runtime 1.28.0 (MIT). ~240 MB download, optional."
+      "notice": "NVIDIA CUDA runtime for ONNX Runtime 1.28.0 (MIT). ~240 MB download, optional. Replaces the bundled CPU runtime — restart OBS to enable GPU acceleration."
     },
     {
       "id": "inswapper_128",

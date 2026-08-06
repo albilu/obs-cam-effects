@@ -25,6 +25,15 @@ Ort::SessionOptions makeSessionOptions(int intraOpThreads, bool cuda)
 	opts.SetIntraOpNumThreads(intraOpThreads);
 	opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 	if (cuda) {
+		/* The classic append API logs through ORT's DefaultLogger,
+		 * which exists only once an Env has been created. Force ours
+		 * first: in the OrtModel ctor the Env and the options are
+		 * built in the same expression, whose evaluation order is
+		 * unspecified — without this the FIRST CUDA session in a
+		 * process fails with "Attempt to use DefaultLogger but
+		 * none has been registered" and silently falls back to
+		 * CPU. */
+		(void)engine::sharedEnv();
 		/* Classic CUDA EP API: present only in the full GPU ORT
 		 * build, resolved at runtime so the plugin still loads
 		 * with the bundled CPU build (same SONAME). */

@@ -22,6 +22,16 @@ struct DownloadRequest {
 	 * leading path components of extracted members (e.g. 2 makes the
 	 * ORT provider libs land flat in extractDestDir). */
 	int stripComponents = 0;
+	/* When true, each extracted member is moved into extractDestDir
+	 * with an individual atomic rename() (existing files with the same
+	 * name are replaced, unrelated files are preserved). When false,
+	 * the whole extractDestDir is swapped with the staging dir. Use
+	 * overlay mode when the destination holds other live content
+	 * (e.g. the plugin bin dir): the swap would wipe it, and
+	 * overwriting a mapped .so in place can SIGBUS the running
+	 * process — rename() swaps the dirent, the old inode stays
+	 * mapped. */
+	bool extractOverlay = false;
 };
 
 enum class State { Idle, Downloading, Verifying, Extracting, Done, Error };

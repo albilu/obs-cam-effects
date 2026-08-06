@@ -201,7 +201,9 @@ static void cam_effects_compose_status(struct cam_effects_filter *filter)
 		return;
 	}
 
-	char dl_state[32] = {0};
+	/* 64: the provider-done state carries the restart hint
+	 * ("done — restart OBS to enable GPU acceleration"). */
+	char dl_state[64] = {0};
 	double dl_prog = -1.0;
 	cam_fx_download_state(filter->fx, dl_state, sizeof(dl_state),
 			      &dl_prog);
@@ -388,9 +390,12 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 	}
 
 	/* Create the inference engine lazily on first non-off mode (or
-	 * when face swap is on: it shares the same engine). The graphics
-	 * lock synchronizes the publication of filter->fx with the
-	 * render thread. */
+	 * when face swap is on: it shares the same engine). cam_fx_create
+	 * touches no graphics resources (ORT sessions + worker thread
+	 * only) and can take seconds (model load, first CUDA EP init) —
+	 * keep it out of the graphics lock so the render thread is not
+	 * stalled; the lock only publishes filter->fx to the render
+	 * thread. */
 	if (!filter->fx &&
 	    (atomic_load_explicit(&filter->mode_id, memory_order_relaxed) !=
 		     MODE_OFF ||
@@ -404,9 +409,11 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 			 "%s/.config/obs-cam-effects/models/"
 			 "rvm_mobilenetv3_fp32.onnx",
 			 home ? home : ".");
-		obs_enter_graphics();
+		cam_fx_t *fx = NULL;
 		if (lite && standard)
-			filter->fx = cam_fx_create(lite, standard, quality, 2);
+			fx = cam_fx_create(lite, standard, quality, 2);
+		obs_enter_graphics();
+		filter->fx = fx;
 		obs_leave_graphics();
 		bfree(lite);
 		bfree(standard);

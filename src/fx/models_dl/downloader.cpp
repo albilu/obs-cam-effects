@@ -108,6 +108,20 @@ std::string shellQuote(const std::string &s)
 	return q + "'";
 }
 
+/* Path of `member` after tar --strip-components=N: the N leading
+ * '/'-separated components are dropped. */
+std::string strippedPath(const std::string &member, int n)
+{
+	std::string::size_type pos = 0;
+	for (int i = 0; i < n; i++) {
+		auto slash = member.find('/', pos);
+		if (slash == std::string::npos)
+			break;
+		pos = slash + 1;
+	}
+	return member.substr(pos);
+}
+
 } // namespace
 
 void Downloader::run(DownloadRequest req)
@@ -165,11 +179,12 @@ void Downloader::run(DownloadRequest req)
 
 	if (!req.extractMembers.empty()) {
 		state_.store(State::Extracting);
-		/* Stage into a sibling dir, then swap it into place:
-		 * rename() of a directory is atomic on the same filesystem
-		 * (staging/old are siblings of extractDestDir, so same
-		 * fs), and a killed process never leaves a truncated
-		 * extraction inside the live extractDestDir. */
+		/* Stage into a sibling dir, then move the files into
+		 * place: whole-dir swap (default) or per-file overlay
+		 * rename (extractOverlay). A killed process never leaves
+		 * a truncated extraction inside the live extractDestDir:
+		 * the dir swap is atomic (rename of a directory, same
+		 * fs), and each overlay rename is atomic per file. */
 		std::string staging = req.extractDestDir + ".staging";
 		std::string oldDir = req.extractDestDir + ".old";
 		rc = runCmd("rm -rf " + shellQuote(staging));
@@ -195,6 +210,40 @@ void Downloader::run(DownloadRequest req)
 			return;
 		}
 		std::remove(part.c_str());
+
+		if (req.extractOverlay) {
+			/* Overlay: move each extracted file into the live
+			 * destination dir with an atomic per-file rename
+			 * (preserves unrelated files and mapped inodes). */
+			rc = runCmd("mkdir -p " + shellQuote(req.extractDestDir));
+			bool moved = rc == 0;
+			for (const auto &m : req.extractMembers) {
+				if (!moved)
+					break;
+				std::string rel =
+					strippedPath(m, req.stripComponents);
+				std::string dstFile =
+					req.extractDestDir + "/" + rel;
+				auto slash = dstFile.find_last_of('/');
+				if (slash != std::string::npos)
+					runCmd("mkdir -p " +
+					       shellQuote(dstFile.substr(
+						       0, slash)));
+				if (rel.empty() ||
+				    std::rename((staging + "/" + rel).c_str(),
+						dstFile.c_str()) != 0) {
+					moved = false;
+					break;
+				}
+			}
+			runCmd("rm -rf " + shellQuote(staging));
+			if (!moved) {
+				fail("overlay install failed");
+				return;
+			}
+			state_.store(State::Done);
+			return;
+		}
 
 		/* Swap: move any existing live dir aside, move staging in,
 		 * restore the old dir if the swap fails. */
