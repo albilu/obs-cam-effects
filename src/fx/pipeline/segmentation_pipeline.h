@@ -25,11 +25,11 @@ public:
 	/* Creates a pipeline for the given tier.
 	 * modelPaths: lite / standard / quality ONNX paths (quality may be
 	 * empty ONLY if tier != Quality). Throws on missing/invalid model.
-	 * providersDir: dir with the CUDA provider library ("" = CPU). */
+	 * tryCuda: attempt the CUDA execution provider (CPU fallback). */
 	SegmentationPipeline(SegTier tier, const std::string &litePath,
 			     const std::string &standardPath,
 			     const std::string &qualityPath, int threads = 2,
-			     const std::string &providersDir = "");
+			     bool tryCuda = false);
 
 	std::shared_ptr<Mask> process(const Frame &frame);
 

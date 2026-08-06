@@ -7,8 +7,8 @@
 namespace fx {
 
 PPHumanSeg::PPHumanSeg(const std::string &modelPath, int threads,
-		       const std::string &providersDir)
-	: model_(modelPath, threads, providersDir),
+		       bool tryCuda)
+	: model_(modelPath, threads, tryCuda),
 	  tensor_(3 * kSize * kSize)
 {
 	const auto &shape = model_.input().shape;

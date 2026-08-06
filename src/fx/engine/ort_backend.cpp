@@ -2,8 +2,8 @@
 
 #include "fx/engine/ep_probe.h"
 
+#include <dlfcn.h>
 #include <stdexcept>
-#include <unordered_map>
 
 namespace fx::engine {
 
@@ -25,23 +25,21 @@ Ort::SessionOptions makeSessionOptions(int intraOpThreads, bool cuda)
 	opts.SetIntraOpNumThreads(intraOpThreads);
 	opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 	if (cuda) {
-		/* Append the first CUDA EP device registered on the
-		 * shared env (plugin EP path, ORT 1.28). */
-		std::vector<Ort::ConstEpDevice> eps;
-		for (const auto &d : engine::sharedEnv().GetEpDevices()) {
-			const char *name = d.EpName();
-			if (name &&
-			    std::string(name).find("CUDA") !=
-				    std::string::npos) {
-				eps.push_back(d);
-				break;
-			}
+		/* Classic CUDA EP API: present only in the full GPU ORT
+		 * build, resolved at runtime so the plugin still loads
+		 * with the bundled CPU build (same SONAME). */
+		using AppendCudaFn = OrtStatusPtr (*)(OrtSessionOptions *, int);
+		static AppendCudaFn appendCuda = reinterpret_cast<AppendCudaFn>(
+			dlsym(RTLD_DEFAULT,
+			      "OrtSessionOptionsAppendExecutionProvider_CUDA"));
+		if (!appendCuda)
+			throw std::runtime_error(
+				"fx: classic CUDA API unavailable");
+		OrtStatusPtr st = appendCuda(opts, 0);
+		if (st) {
+			Ort::GetApi().ReleaseStatus(st);
+			throw std::runtime_error("fx: CUDA append failed");
 		}
-		if (eps.empty())
-			throw std::runtime_error("fx: no CUDA EP device");
-		opts.AppendExecutionProvider_V2(
-			engine::sharedEnv(), eps,
-			std::unordered_map<std::string, std::string>{});
 	}
 	return opts;
 }
@@ -49,11 +47,11 @@ Ort::SessionOptions makeSessionOptions(int intraOpThreads, bool cuda)
 } // namespace
 
 OrtModel::OrtModel(const std::string &modelPath, int intraOpThreads,
-		   const std::string &providersDir)
+		   bool tryCuda)
 	: session_(nullptr), modelPath_(modelPath),
 	  intraOpThreads_(intraOpThreads)
 {
-	if (!providersDir.empty() && EpProbe::cudaAvailable(providersDir)) {
+	if (tryCuda && EpProbe::cudaAvailable()) {
 		try {
 			session_ = Ort::Session(
 				engine::sharedEnv(), modelPath.c_str(),

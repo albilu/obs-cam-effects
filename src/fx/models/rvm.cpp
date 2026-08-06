@@ -6,25 +6,21 @@
 
 /* ============================ KNOWN BUGS ============================
  *
- * BUG-1 (Critical, worked around): ORT 1.28 CUDA EP hard-segfaults
- *   executing this model on Blackwell (sm_120) GPUs.
+ * BUG-1 (Historical, fixed): the ORT 1.28 plugin-EP-V2 path hard-
+ *   segfaulted executing this model on Blackwell (sm_120) GPUs.
  *     - Symptom: uncatchable SIGSEGV inside libonnxruntime during
  *       session Run(). NOT a C++ exception, so OrtModel::tryRun's lazy
- *       CPU fallback CANNOT cover it — the whole OBS process dies.
+ *       CPU fallback could NOT cover it — the whole OBS process died.
  *     - Verified: 2026-07-30, RTX 5070 (sm_120), driver 580.126.09,
- *       cuDNN 9.24, onnxruntime-linux-x64-gpu_cuda13-1.28.0.tgz.
- *       PP-HumanSeg and MediaPipe run FINE on the same EP (simple
- *       static-IO graphs); RVM's dynamic 6-in/6-out graph crashes.
- *     - Root cause (upstream): prebuilt ORT CUDA packages ship
- *       incomplete sm_120 kernel coverage — microsoft/onnxruntime
- *       issue #26177. Community fix is building ORT from source with
- *       CMAKE_CUDA_ARCHITECTURES=120 (confirmed working on RTX 5070 Ti
- *       with ORT 1.24.2). NOT system-specific; no prebuilt ORT version
- *       (older or newer) is known to work for this graph on sm_120.
- *     - Workaround: ctor pins the model to CPU (~17ms/frame, 57fps).
- *     - Re-enable procedure: after an ORT/cuDNN bump, drop the ""
- *       providersDir override in the ctor and re-run the RVM CUDA
- *       bench (100 frames at 192x192, watch for SIGSEGV).
+ *       cuDNN 9.24. PP-HumanSeg and MediaPipe ran FINE on that path
+ *       (simple static-IO graphs); RVM's dynamic 6-in/6-out graph
+ *       crashed (as did inswapper).
+ *     - FIXED by the classic CUDA API on the full GPU ORT build
+ *       (OrtSessionOptionsAppendExecutionProvider_CUDA, verified
+ *       2026-08-04 on RTX 5070): the plugin-EP-V2 path crashed on this
+ *       graph, the classic path runs it correctly.
+ *     - The CPU pin is lifted; if the classic path ever regresses,
+ *       re-pin here (pass tryCuda=false to model_ in the ctor).
  *
  * BUG-2 (Test infra): tests/test_rvm.cpp needs the RVM model file at
  *   build_x86_64/models/rvm_mobilenetv3_fp32.onnx, but that file is a
@@ -41,14 +37,9 @@
 
 namespace fx {
 
-Rvm::Rvm(const std::string &modelPath, int threads,
-	 const std::string &providersDir)
-	: model_(modelPath, threads, ""), tensor_(3 * kSize * kSize)
+Rvm::Rvm(const std::string &modelPath, int threads, bool tryCuda)
+	: model_(modelPath, threads, tryCuda), tensor_(3 * kSize * kSize)
 {
-	/* CPU pin — see KNOWN BUGS / BUG-1 at the top of this file.
-	 * providersDir is deliberately ignored until the ORT CUDA EP can
-	 * execute this graph on Blackwell without segfaulting. */
-	(void)providersDir;
 	if (model_.inputCount() != 6 || model_.outputCount() != 6)
 		throw std::runtime_error("fx: unexpected RVM IO count");
 

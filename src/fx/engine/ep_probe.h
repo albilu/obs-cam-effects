@@ -1,19 +1,17 @@
 #pragma once
 
-#include <string>
-
 namespace fx {
 
-/* Execution-provider probe. CUDA is used when its provider library has
- * been downloaded to providersDir (via the model manager) AND
- * registration succeeds. CPU is always the guaranteed fallback. */
+/* Execution-provider probe (classic CUDA API path).
+ * The bundled CPU ORT build has no CUDA compiled in; when the full GPU
+ * build is installed next to the plugin (same SONAME), the classic
+ * OrtSessionOptionsAppendExecutionProvider_CUDA symbol is resolvable at
+ * runtime. CPU is always the guaranteed fallback. */
 class EpProbe {
 public:
-	/* Registers the CUDA EP library on fx::engine::sharedEnv() if the
-	 * file exists. Returns true if CUDA is usable for new sessions.
-	 * Safe to call multiple times (registration is call_once-guarded;
-	 * the result latches after the first attempt). */
-	static bool cudaAvailable(const std::string &providersDir);
+	/* True when the classic CUDA append symbol resolves (i.e. we're
+	 * running on the GPU ORT build) — cheap, cached. */
+	static bool cudaAvailable();
 
 	/* Human-readable backend name for status display. */
 	static const char *backendName(bool cuda);

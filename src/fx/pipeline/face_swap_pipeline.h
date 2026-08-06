@@ -26,7 +26,7 @@ public:
 	FaceSwapPipeline(const std::string &yunetPath,
 			 const std::string &inswapperPath,
 			 const std::string &arcfacePath, int threads = 2,
-			 const std::string &providersDir = "");
+			 bool tryCuda = false);
 
 	void setSourceEmbedding(std::vector<float> latent);
 	bool hasSource() const { return !sourceLatent_.empty(); }

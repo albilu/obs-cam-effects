@@ -11,21 +11,19 @@ SegmentationPipeline::SegmentationPipeline(SegTier tier,
 					   const std::string &litePath,
 					   const std::string &standardPath,
 					   const std::string &qualityPath,
-					   int threads,
-					   const std::string &providersDir)
+					   int threads, bool tryCuda)
 {
 	switch (tier) {
 	case SegTier::Lite:
 		model_ = std::make_unique<MediaPipeLite>(litePath, threads,
-							 providersDir);
+							 tryCuda);
 		break;
 	case SegTier::Standard:
 		model_ = std::make_unique<PPHumanSeg>(standardPath, threads,
-						      providersDir);
+						      tryCuda);
 		break;
 	case SegTier::Quality:
-		model_ = std::make_unique<Rvm>(qualityPath, threads,
-					       providersDir);
+		model_ = std::make_unique<Rvm>(qualityPath, threads, tryCuda);
 		break;
 	}
 }

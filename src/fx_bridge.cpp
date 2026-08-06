@@ -238,7 +238,7 @@ bool buildAndSwap(cam_fx *fx, fx::SegTier tier)
 	try {
 		auto p = std::make_shared<fx::SegmentationPipeline>(
 			tier, fx->litePath, fx->standardPath, fx->qualityPath,
-			fx->threads, cacheDir("providers"));
+			fx->threads, /*tryCuda=*/true);
 		p->setMaskParams(fx->params);
 		fx->pipeline = p;
 		fx->tierInEffect = (int)tier + 1;
@@ -612,8 +612,7 @@ int cam_fx_faceswap_available(cam_fx_t *fx)
 	try {
 		pumpFaceswapDownload(fx);
 		return faceswapModelsPresent(fx) &&
-			       fx::EpProbe::cudaAvailable(
-				       cacheDir("providers"))
+			       fx::EpProbe::cudaAvailable()
 			       ? 1
 			       : 0;
 	} catch (...) {
@@ -629,7 +628,7 @@ int cam_fx_faceswap_missing(cam_fx_t *fx, char *buf, int buf_len)
 	try {
 		if (!faceswapModelsPresent(fx))
 			reason = "models not downloaded";
-		else if (!fx::EpProbe::cudaAvailable(cacheDir("providers")))
+		else if (!fx::EpProbe::cudaAvailable())
 			reason = "no GPU acceleration";
 	} catch (...) {
 		reason = "unavailable";
@@ -659,7 +658,7 @@ void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled)
 						yunet, inswapperCachePath(fx),
 						arcfaceCachePath(fx),
 						fx->threads,
-						cacheDir("providers"));
+						/*tryCuda=*/true);
 				swap->setParams(fx->swapParams);
 				/* Missing source is fine: process() no-
 				 * swaps until one is set (hasSource). */

@@ -14,7 +14,8 @@ namespace fx {
 class FaceEmbedder {
 public:
 	FaceEmbedder(const std::string &arcfacePath,
-		     const std::string &inswapperPathForEmap, int threads = 2);
+		     const std::string &inswapperPathForEmap, int threads = 2,
+		     bool tryCuda = false);
 
 	/* Embedding for one aligned 112x112 BGR crop (from YuNet
 	 * landmarks via template112 umeyama warp). Returns the 512-d

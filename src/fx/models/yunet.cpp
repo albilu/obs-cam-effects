@@ -30,8 +30,8 @@ float boxIou(const FaceBox &a, const FaceBox &b)
 
 } // namespace
 
-YuNet::YuNet(const std::string &modelPath, int threads)
-	: model_(modelPath, threads), tensor_(3 * kSize * kSize)
+YuNet::YuNet(const std::string &modelPath, int threads, bool tryCuda)
+	: model_(modelPath, threads, tryCuda), tensor_(3 * kSize * kSize)
 {
 	const auto &shape = model_.input().shape;
 	if (shape.size() != 4 || shape[1] != 3 || shape[2] != kSize ||

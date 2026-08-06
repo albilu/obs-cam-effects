@@ -7,10 +7,9 @@
 
 namespace fx::engine {
 
-/* Process-wide shared ONNX Runtime environment. Plugin execution
- * providers (CUDA) register per-env, so every session that may use
- * them must be created on this one env. ORT documents Env as shareable
- * across sessions and threads.
+/* Process-wide shared ONNX Runtime environment. ORT documents Env as
+ * shareable across sessions and threads; one env per process is the
+ * recommended usage.
  *
  * Lifetime: function-local static, destroyed at process exit. Every
  * Ort::Session created on it must be destroyed BEFORE that. This holds
@@ -35,13 +34,13 @@ public:
 		std::vector<int64_t> shape;
 	};
 
-	/* providersDir: when non-empty and the CUDA provider library is
-	 * present and registers (see EpProbe), the session is attempted
-	 * with the CUDA execution provider; ANY failure (append or CUDA
-	 * init) silently falls back to a plain CPU session. usesCuda()
-	 * reports which happened. */
+	/* tryCuda: when true AND the classic CUDA append symbol resolves
+	 * (full GPU ORT build installed; see EpProbe), the session is
+	 * attempted with the CUDA execution provider (device 0); ANY
+	 * failure (append or CUDA init) silently falls back to a plain
+	 * CPU session. usesCuda() reports which happened. */
 	explicit OrtModel(const std::string &modelPath, int intraOpThreads = 2,
-			  const std::string &providersDir = "");
+			  bool tryCuda = false);
 
 	size_t inputCount() const { return inputs_.size(); }
 	size_t outputCount() const { return outputs_.size(); }

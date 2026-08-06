@@ -18,7 +18,7 @@ public:
 	static constexpr int kSize = 192;
 
 	explicit PPHumanSeg(const std::string &modelPath, int threads = 2,
-			    const std::string &providersDir = "");
+			    bool tryCuda = false);
 
 	Mask infer(const Frame &frame) override;
 	bool usesCuda() const override { return model_.usesCuda(); }

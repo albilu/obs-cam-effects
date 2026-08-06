@@ -20,10 +20,10 @@ constexpr int kLatent = 512; // inswapper source latent dims
 FaceSwapPipeline::FaceSwapPipeline(const std::string &yunetPath,
 				   const std::string &inswapperPath,
 				   const std::string &arcfacePath, int threads,
-				   const std::string &providersDir)
-	: detector_(yunetPath, threads),
-	  swapper_(inswapperPath, threads, providersDir),
-	  embedder_(arcfacePath, inswapperPath, threads)
+				   bool tryCuda)
+	: detector_(yunetPath, threads, tryCuda),
+	  swapper_(inswapperPath, threads, tryCuda),
+	  embedder_(arcfacePath, inswapperPath, threads, tryCuda)
 {
 	/* Verified inswapper_128 IO: target [1,3,128,128], source [1,512],
 	 * output [1,3,128,128]. */

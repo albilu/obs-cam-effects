@@ -29,8 +29,9 @@ void l2Normalize(std::vector<float> &v)
 } // namespace
 
 FaceEmbedder::FaceEmbedder(const std::string &arcfacePath,
-			   const std::string &inswapperPathForEmap, int threads)
-	: arcface_(arcfacePath, threads),
+			   const std::string &inswapperPathForEmap, int threads,
+			   bool tryCuda)
+	: arcface_(arcfacePath, threads, tryCuda),
 	  emap_(onnxLastInitializerFloats(inswapperPathForEmap, kDim * kDim))
 {
 	/* Batch dim is dynamic (-1); only the fixed dims are checked. */

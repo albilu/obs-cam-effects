@@ -18,7 +18,8 @@ struct FaceBox {
 /* YuNet 2023mar face detector (640x640, BGR, no normalization). */
 class YuNet {
 public:
-	explicit YuNet(const std::string &modelPath, int threads = 2);
+	explicit YuNet(const std::string &modelPath, int threads = 2,
+		       bool tryCuda = false);
 
 	/* Detects faces in a BGRA frame of any size (resized to 640x640
 	 * internally; coordinates mapped back to frame pixels). Returns
