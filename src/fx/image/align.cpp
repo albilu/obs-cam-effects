@@ -259,7 +259,7 @@ void blendPx(uint8_t *img, int idx, int channels, uint8_t fg, float alpha)
 
 void stampWatermarkAI(uint8_t *img, int w, int h, int channels)
 {
-	int scale = std::max(1, h / 270); /* ~2.5% of frame width */
+	int scale = std::max(3, h / 270); /* >=3 so the badge stays readable on small feeds (e.g. 640x480); ~2.5% of frame width at 1080p */
 	int margin = std::max(1, h / 40);
 	int glyphW = 5 * scale, glyphH = 7 * scale, gap = scale;
 	int pad = scale;
