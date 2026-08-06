@@ -49,6 +49,72 @@ TEST(FaceSwapPipeline, SwapIsDeterministicOnSameFrame)
 	ASSERT_EQ(f.bgra.size(), before.size());
 }
 
+/* Detection decimation on blank frames: with no face ever found, every
+ * frame is a detect frame (no reusable box) and must return false
+ * without crashing, detectEveryN=2 included. */
+TEST(FaceSwapPipeline, DetectEveryNBlankFrames)
+{
+	if (!fileExists(FX_INSWAPPER_PATH) || !fileExists(FX_ARCFACE_PATH))
+		GTEST_SKIP() << "runtime models not downloaded";
+	fx::FaceSwapPipeline pipe(FX_YUNET_MODEL_PATH, FX_INSWAPPER_PATH,
+				  FX_ARCFACE_PATH, 1);
+	fx::FaceEmbedder emb(FX_ARCFACE_PATH, FX_INSWAPPER_PATH, 1);
+	std::vector<uint8_t> crop(112 * 112 * 3, 128);
+	pipe.setSourceEmbedding(emb.embed(crop));
+	fx::FaceSwapParams params;
+	params.detectEveryN = 2;
+	pipe.setParams(params);
+
+	fx::Frame f;
+	f.width = 320;
+	f.height = 240;
+	f.bgra.assign(320u * 240u * 4u, 128);
+	for (int i = 0; i < 8; i++)
+		ASSERT_FALSE(pipe.process(f))
+			<< "blank frame " << i << " must not swap";
+}
+
+/* Decimation must NOT skip the swap itself: with detectEveryN=2 the
+ * second frame reuses the previous box and is still swapped. */
+TEST(FaceSwapPipeline, DetectEveryNStillSwapsEveryFrame)
+{
+	if (!fileExists(FX_INSWAPPER_PATH) || !fileExists(FX_ARCFACE_PATH))
+		GTEST_SKIP() << "runtime models not downloaded";
+	int w = 0, h = 0, channels = 0;
+	stbi_uc *rgb = stbi_load(FX_FIXTURE_FACE_PATH, &w, &h, &channels, 3);
+	ASSERT_TRUE(rgb != nullptr) << "fixture missing: "
+				    << FX_FIXTURE_FACE_PATH;
+	fx::Frame f;
+	f.width = w;
+	f.height = h;
+	f.bgra.resize((size_t)w * (size_t)h * 4);
+	for (size_t i = 0, n = (size_t)w * (size_t)h; i < n; i++) {
+		f.bgra[i * 4 + 0] = rgb[i * 3 + 2];
+		f.bgra[i * 4 + 1] = rgb[i * 3 + 1];
+		f.bgra[i * 4 + 2] = rgb[i * 3 + 0];
+		f.bgra[i * 4 + 3] = 255;
+	}
+	stbi_image_free(rgb);
+
+	fx::FaceSwapPipeline pipe(FX_YUNET_MODEL_PATH, FX_INSWAPPER_PATH,
+				  FX_ARCFACE_PATH, 1);
+	fx::FaceEmbedder emb(FX_ARCFACE_PATH, FX_INSWAPPER_PATH, 1);
+	std::vector<uint8_t> crop(112 * 112 * 3, 128);
+	pipe.setSourceEmbedding(emb.embed(crop));
+	fx::FaceSwapParams params;
+	params.detectEveryN = 2;
+	params.watermark = false;
+	pipe.setParams(params);
+
+	/* Frame 0 detects; frames 1 and 3 reuse the box; frame 2
+	 * detects again. All four must swap. */
+	for (int i = 0; i < 4; i++) {
+		fx::Frame work = f;
+		ASSERT_TRUE(pipe.process(work))
+			<< "frame " << i << " must be swapped";
+	}
+}
+
 /* Regression: the paste-back blend must not touch ANY pixel outside the
  * face region (whole-frame mask bleed: the feathered ellipse does not
  * reach 0 at the crop border, and the mask warp clamps out-of-crop

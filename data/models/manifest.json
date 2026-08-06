@@ -30,6 +30,17 @@
       "notice": "NVIDIA CUDA runtime for ONNX Runtime 1.28.0 (MIT). ~240 MB download, optional. Replaces the bundled CPU runtime — restart OBS to enable GPU acceleration."
     },
     {
+      "id": "inswapper_128_fp16",
+      "kind": "model",
+      "tier": "faceswap",
+      "file": "inswapper_128_fp16.onnx",
+      "url": "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128_fp16.onnx",
+      "sha256": "6d51a9278a1f650cffefc18ba53f38bf2769bf4bbff89267822cf72945f8a38b",
+      "size": 277680638,
+      "license": "InsightFace non-commercial",
+      "notice": "inswapper_128_fp16 (InsightFace): licensed for NON-COMMERCIAL research use only. By downloading you accept these terms."
+    },
+    {
       "id": "inswapper_128",
       "kind": "model",
       "tier": "faceswap",

@@ -146,8 +146,8 @@ struct cam_fx {
 	std::vector<float> pendingLatent; // source set before pipeline built
 	bool faceswapEnabled = false;
 
-	/* 2-stage face-swap download chain (inswapper_128 -> w600k_r50):
-	 * fsId is the current stage ("" when the chain is idle). */
+	/* 2-stage face-swap download chain (inswapper_128_fp16 ->
+	 * w600k_r50): fsId is the current stage ("" when idle). */
 	std::string fsId;
 	bool fsChain = false;
 
@@ -192,9 +192,26 @@ std::string modelCachePath(cam_fx *fx, const char *id, const char *fallback)
 	return cacheDir("models") + "/" + fallback;
 }
 
-std::string inswapperCachePath(cam_fx *fx)
+std::string inswapperFp16CachePath(cam_fx *fx)
+{
+	return modelCachePath(fx, "inswapper_128_fp16",
+			      "inswapper_128_fp16.onnx");
+}
+
+std::string inswapperFp32CachePath(cam_fx *fx)
 {
 	return modelCachePath(fx, "inswapper_128", "inswapper_128.onnx");
+}
+
+/* fp16 is the default download (1.7x faster on CUDA, fp32 graph IO and
+ * the same embedded emap = zero-change drop-in); the fp32 model remains
+ * as fallback for users who already downloaded it. */
+std::string inswapperCachePath(cam_fx *fx)
+{
+	const std::string fp16 = inswapperFp16CachePath(fx);
+	if (fileExists(fp16))
+		return fp16;
+	return inswapperFp32CachePath(fx);
 }
 
 std::string arcfaceCachePath(cam_fx *fx)
@@ -204,7 +221,8 @@ std::string arcfaceCachePath(cam_fx *fx)
 
 bool faceswapModelsPresent(cam_fx *fx)
 {
-	return fileExists(inswapperCachePath(fx)) &&
+	return (fileExists(inswapperFp16CachePath(fx)) ||
+		fileExists(inswapperFp32CachePath(fx))) &&
 	       fileExists(arcfaceCachePath(fx));
 }
 
@@ -396,10 +414,10 @@ int startDownloadById(cam_fx *fx, const char *id)
 	}
 }
 
-/* Drives the 2-stage face-swap chain: when inswapper_128 completes,
- * w600k_r50 starts (skipped when its file already exists). Called from
- * the status getters, so every UI poll advances the chain. On error
- * the chain stops with fsId on the failed stage. */
+/* Drives the 2-stage face-swap chain: when inswapper_128_fp16
+ * completes, w600k_r50 starts (skipped when its file already exists).
+ * Called from the status getters, so every UI poll advances the chain.
+ * On error the chain stops with fsId on the failed stage. */
 void pumpFaceswapDownload(cam_fx *fx)
 {
 	if (!fx->fsChain)
@@ -411,7 +429,7 @@ void pumpFaceswapDownload(cam_fx *fx)
 	}
 	if (st != fx::models_dl::State::Done)
 		return;
-	if (fx->fsId == "inswapper_128") {
+	if (fx->fsId == "inswapper_128_fp16") {
 		if (!fileExists(arcfaceCachePath(fx)) &&
 		    startDownloadById(fx, "w600k_r50") == 0) {
 			fx->fsId = "w600k_r50";
@@ -833,11 +851,14 @@ int cam_fx_start_faceswap_download(cam_fx_t *fx)
 			return -1; // another download is running
 		fx->fsChain = false;
 		fx->fsId.clear();
-		if (!fileExists(inswapperCachePath(fx))) {
-			if (startDownloadById(fx, "inswapper_128") != 0)
+		/* No usable inswapper (neither fp16 nor fp32): fetch the
+		 * fp16 default. */
+		if (!fileExists(inswapperFp16CachePath(fx)) &&
+		    !fileExists(inswapperFp32CachePath(fx))) {
+			if (startDownloadById(fx, "inswapper_128_fp16") != 0)
 				return -1;
 			fx->fsChain = true;
-			fx->fsId = "inswapper_128";
+			fx->fsId = "inswapper_128_fp16";
 			return 0;
 		}
 		if (!fileExists(arcfaceCachePath(fx))) {

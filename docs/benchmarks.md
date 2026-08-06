@@ -39,7 +39,7 @@ PP-HumanSeg pipeline on the worker thread, latest-wins drop policy, 600 frames o
 
 ## Face swap models (2026-08-06, classic CUDA API)
 
-**Models in use:** YuNet (detection, per frame, bundled) + inswapper_128 (swap, per frame, downloaded) + ArcFace w600k_r50 (source identity embedding, downloaded, runs once per source-image selection — not a per-frame cost, so not in the table).
+**Models in use:** YuNet (detection, bundled) + inswapper (swap, per frame, downloaded — **fp16 is the default download**, fp32 remains as fallback) + ArcFace w600k_r50 (source identity embedding, downloaded, runs once per source-image selection — not a per-frame cost, so not in the table). Detection is decimated by default: YuNet runs every 2nd frame (`detectEveryN=2`), skipped frames reuse the EMA-smoothed box while align/swap/paste-back still run every frame.
 
 Fixture: `tests/data/face-test.jpg` (640×799, real face, detection score 0.95). 100 iterations after 1 warmup, ORT intra-op threads = 2. "detect" = full YuNet path (resize + inference + decode/NMS); "model" = inference only.
 
@@ -47,9 +47,12 @@ Fixture: `tests/data/face-test.jpg` (640×799, real face, detection score 0.95).
 |---|---|---|---|
 | YuNet 2023mar — detect (full path) | **10.21 ms** | — | fx::YuNet detect stays CPU by design |
 | YuNet 2023mar — model only | 7.33 ms* | **1.58 ms** | raw OrtModel; **4.6× speedup**. *CPU figure re-measured by independent review (stable 7.33 ms); the original 4.97 ms was not reproducible |
-| inswapper_128 — model only | 1245.96 ms | **15.75 ms** | **79× speedup — works on the classic API** (plugin-EP-V2 SIGSEGV'd on first Run) |
-| FaceSwapPipeline end-to-end | 1271.61 ms (0.8 fps) | **41.00 ms (24.4 fps)** | detect CPU + swap CUDA + paste-back |
+| inswapper_128 (fp32) — model only | 1245.96 ms | **15.75 ms** | **79× speedup — works on the classic API** (plugin-EP-V2 SIGSEGV'd on first Run). Re-measured 15.72 ms in the fp16 bench run |
+| inswapper_128_fp16 — model only | not measured | **9.54 ms** | **1.65× vs fp32**; fp32 graph IO + bit-identical embedded emap = zero-change drop-in; default download since 2026-08-06 |
+| FaceSwapPipeline end-to-end (fp32, detect every frame) | 1271.61 ms (0.8 fps) | **41.00 ms (24.4 fps)** | detect CPU + swap CUDA + paste-back |
+| FaceSwapPipeline end-to-end (fp16, detect every frame) | — | **34.47 ms (29.0 fps)** | fp16 swap alone: −6.5 ms vs fp32 e2e |
+| FaceSwapPipeline end-to-end (fp16, detect every 2nd frame) | — | **31.10 ms (32.2 fps)** | **shipped default** (`detectEveryN=2`): decimation saves another ~3.4 ms of CPU detect |
 
 **CPU face swap is not viable** (spec confirmed): 0.8 fps end-to-end — the 174.7-GFLOP inswapper dominates (~1.25 s/frame). YuNet detect alone (10.2 ms) would be fine on CPU.
 
-**CUDA face swap is viable: 24.4 fps end-to-end.** inswapper drops 1246 ms → 15.8 ms on the classic API; the remaining e2e budget is CPU-side detect (~10 ms) plus align/paste-back/watermark. Verified in the real plugin too: `pipeline tier in effect: quality (backend: CUDA)` + masks flowing, OBS smoke run 2026-08-06.
+**CUDA face swap is viable: 32.2 fps end-to-end** with the shipped defaults (fp16 inswapper + detection decimation), up from 24.4 fps (fp32, detect every frame). inswapper drops 1246 ms → 15.8 ms (fp32) → 9.5 ms (fp16) on the classic API; the remaining e2e budget is CPU-side detect (~10 ms every frame, ~5 ms amortized at `detectEveryN=2`) plus align/paste-back/watermark. Verified in the real plugin too: `pipeline tier in effect: quality (backend: CUDA)` + masks flowing, OBS smoke run 2026-08-06.

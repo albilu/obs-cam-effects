@@ -135,3 +135,30 @@ merge against this base.
     persistent license notice + click-to-download.
   - mask threshold binarize has no direct unit test (contour/feather/EMA
     do); trivial code, user-verified.
+
+## Plan 4 state (face swap)
+
+- Pipeline: YuNet (bundled, Apache-2.0) -> umeyama align -> inswapper
+  (runtime download, non-commercial) -> DLC-style feathered-ellipse
+  paste-back -> segmentation. Amendment-9 settings shipped: swap
+  intensity, sharpness, preserve-mouth (geometric), AI watermark
+  (default ON).
+- Models: **inswapper_128_fp16 is the default download** (278 MB,
+  1.65x faster on CUDA than fp32; fp32 graph IO and a bit-identical
+  embedded emap = zero-change drop-in, same InsightFace non-commercial
+  license). inswapper_128 (fp32) is kept in the manifest as fallback —
+  resolution prefers fp16 when present, and a user who already has the
+  fp32 file is not re-downloaded. ArcFace w600k_r50 provides the source
+  embedding (once per source image, not a per-frame cost). Download
+  chain: inswapper_128_fp16 -> w600k_r50 (~450 MB total).
+- Detection decimation: YuNet runs every 2nd frame by default
+  (FaceSwapParams.detectEveryN = 2; <=1 restores detect-every-frame).
+  Skipped frames reuse the EMA-smoothed previous box; a no-face detect
+  frame invalidates it (next frame forces a re-detect). Align/swap/
+  paste-back still run EVERY frame — only detection is decimated.
+  Internal default, no UI setting (YAGNI).
+- Bench (RTX 5070, classic CUDA API, 2026-08-06): inswapper fp16
+  9.54 ms (fp32 15.75 ms); e2e fp16 34.47 ms detect-every-frame,
+  31.10 ms (32.2 fps) with decimation — see docs/benchmarks.md.
+- Known gaps: single face only; no GFPGAN (not real-time); inswapper
+  quality is 128px (soft by design, sharpness slider mitigates).

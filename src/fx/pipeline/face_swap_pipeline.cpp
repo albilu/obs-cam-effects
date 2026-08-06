@@ -52,32 +52,48 @@ bool FaceSwapPipeline::process(Frame &frame)
 	if (w <= 0 || h <= 0 || frame.bgra.size() != (size_t)w * h * 4)
 		return false;
 
-	auto faces = detector_.detect(frame);
-	if (faces.empty())
-		return false;
-	const FaceBox *best = &faces[0];
-	for (const FaceBox &f : faces)
-		if (f.w * f.h > best->w * best->h)
-			best = &f;
+	/* Detection decimation: YuNet runs on every detectEveryN-th
+	 * frame (and whenever there is no usable previous box); skipped
+	 * frames reuse prevBox_, which the EMA below already stabilizes.
+	 * Align/swap/paste-back still run EVERY frame from the latest
+	 * box. A no-face detect frame invalidates the previous box. */
+	const int everyN = params_.detectEveryN;
+	const bool doDetect = everyN <= 1 ||
+			      (frameCount_ % (uint64_t)everyN) == 0 ||
+			      !havePrevBox_;
+	frameCount_++;
+	if (doDetect) {
+		auto faces = detector_.detect(frame);
+		if (faces.empty()) {
+			havePrevBox_ = false;
+			return false;
+		}
+		const FaceBox *best = &faces[0];
+		for (const FaceBox &f : faces)
+			if (f.w * f.h > best->w * best->h)
+				best = &f;
 
-	/* Temporal smoothing: smoothed = ema*prev + (1-ema)*current,
-	 * per box component and per landmark coordinate. The SMOOTHED
-	 * geometry drives everything below (anti-jitter). */
-	FaceBox box = *best;
-	if (havePrevBox_) {
-		const float ema = params_.bboxEma, cur = 1.0f - ema;
-		box.x = ema * prevBox_.x + cur * box.x;
-		box.y = ema * prevBox_.y + cur * box.y;
-		box.w = ema * prevBox_.w + cur * box.w;
-		box.h = ema * prevBox_.h + cur * box.h;
-		for (int i = 0; i < 5; i++)
-			for (int k = 0; k < 2; k++)
-				box.landmarks[i][k] =
-					ema * prevBox_.landmarks[i][k] +
-					cur * box.landmarks[i][k];
+		/* Temporal smoothing: smoothed = ema*prev + (1-ema)*current,
+		 * per box component and per landmark coordinate. The
+		 * SMOOTHED geometry drives everything below (anti-
+		 * jitter). */
+		FaceBox box = *best;
+		if (havePrevBox_) {
+			const float ema = params_.bboxEma, cur = 1.0f - ema;
+			box.x = ema * prevBox_.x + cur * box.x;
+			box.y = ema * prevBox_.y + cur * box.y;
+			box.w = ema * prevBox_.w + cur * box.w;
+			box.h = ema * prevBox_.h + cur * box.h;
+			for (int i = 0; i < 5; i++)
+				for (int k = 0; k < 2; k++)
+					box.landmarks[i][k] =
+						ema * prevBox_.landmarks[i][k] +
+						cur * box.landmarks[i][k];
+		}
+		prevBox_ = box;
+		havePrevBox_ = true;
 	}
-	prevBox_ = box;
-	havePrevBox_ = true;
+	const FaceBox box = prevBox_;
 
 	/* Forward affine frame -> 128-crop (warpAffineBilinear inverts it
 	 * internally, so crop(p) = frame(M^-1 * p)). */

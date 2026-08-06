@@ -4,6 +4,7 @@
 #include "fx/models/yunet.h"
 #include "fx/types.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,6 +17,7 @@ struct FaceSwapParams {
 	bool preserveMouth = false; // geometric mouth restore (amendment 9)
 	bool watermark = true;      // AI disclosure badge (spec §9)
 	float bboxEma = 0.7f;       // detection smoothing
+	int detectEveryN = 2;       // YuNet every Nth frame (<=1: every frame)
 };
 
 /* YuNet detect (bbox EMA) -> umeyama align -> inswapper -> paste-back
@@ -46,6 +48,7 @@ private:
 	/* Temporal state */
 	bool havePrevBox_ = false;
 	FaceBox prevBox_{};
+	uint64_t frameCount_ = 0;   // detection decimation counter
 	std::vector<uint8_t> aimg_;       // 128x128x3 aligned crop
 	std::vector<uint8_t> fake128_;    // swap output crop
 	std::vector<uint8_t> origFrame_;  // for mouth restore

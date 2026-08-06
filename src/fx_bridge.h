@@ -114,9 +114,10 @@ void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity,
 int cam_fx_try_get_frame(cam_fx_t *fx, const uint8_t **bgra, int *w,
 			 int *h, uint64_t *seq);
 
-/* Starts the 2-stage face-swap download (inswapper_128, then
- * w600k_r50); stages whose file already exists are skipped. Returns 0
- * on start or when nothing is needed, -1 if busy/invalid. */
+/* Starts the 2-stage face-swap download (inswapper_128_fp16, then
+ * w600k_r50); stages whose file already exists are skipped (an existing
+ * fp32 inswapper_128 also satisfies the first stage). Returns 0 on
+ * start or when nothing is needed, -1 if busy/invalid. */
 int cam_fx_start_faceswap_download(cam_fx_t *fx);
 
 /* Face-swap download status: current stage id via id_buf ("" when the

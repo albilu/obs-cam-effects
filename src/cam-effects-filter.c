@@ -580,7 +580,7 @@ static obs_properties_t *cam_effects_properties(void *data)
 				OBS_TEXT_INFO);
 	obs_properties_add_button(
 		props, "download_faceswap_btn",
-		"Download face swap models (non-commercial, 730 MB)",
+		"Download face swap models (non-commercial, ~450 MB)",
 		cam_effects_download_faceswap_clicked);
 
 	/* OBS calls get_properties every time the properties dialog
