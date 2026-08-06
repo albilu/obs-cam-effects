@@ -39,6 +39,8 @@ PP-HumanSeg pipeline on the worker thread, latest-wins drop policy, 600 frames o
 
 ## Face swap models (2026-08-06, classic CUDA API)
 
+**Models in use:** YuNet (detection, per frame, bundled) + inswapper_128 (swap, per frame, downloaded) + ArcFace w600k_r50 (source identity embedding, downloaded, runs once per source-image selection — not a per-frame cost, so not in the table).
+
 Fixture: `tests/data/face-test.jpg` (640×799, real face, detection score 0.95). 100 iterations after 1 warmup, ORT intra-op threads = 2. "detect" = full YuNet path (resize + inference + decode/NMS); "model" = inference only.
 
 | Stage | CPU | CUDA (RTX 5070) | Notes |
