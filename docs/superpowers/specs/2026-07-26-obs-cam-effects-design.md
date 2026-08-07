@@ -222,14 +222,13 @@ Both modes show the failure reason in the properties status line and log with an
 
 ## 10. Packaging & distribution
 
-Built on obs-plugintemplate (CMake presets, `buildspec.json` pinned to oldest supported OBS minor — plugins built against newer libobs fail to load on older OBS). GitHub Actions CI: push → Linux build; semver tag → release packages. Non-Linux template CI jobs are disabled/removed (Linux-only scope).
+Built on obs-plugintemplate (CMake presets, `buildspec.json` pinned to oldest supported OBS minor — plugins built against newer libobs fail to load on older OBS). GitHub Actions CI: push → Linux build; semver tag → release tarball + SLSA attestation.
 
 | Artifact | Specifics |
 |---|---|
-| `.deb` (CPack, zstd + dbgsym) | `/usr/lib/obs-plugins` + `/usr/share/obs/obs-plugins/obs-cam-effects` data dir; ORT/OpenCV static-linked or `$ORIGIN` RPATH |
-| Flatpak on Flathub | `com.obsproject.Studio.Plugin.CamEffects` extension — mandatory, Flatpak OBS cannot see system plugins |
+| `.tar.gz` (bin + data) | Per-user layout: `bin/64bit/*.so` + `data/{effects,locale,models}`; users extract into `~/.config/obs-studio/plugins/obs-cam-effects/`. CPU ORT bundled next to the plugin .so ($ORIGIN RPATH); GPU build is a runtime download, not in the tarball. |
 
-Symbol export hygiene: `-Bsymbolic` + version script so bundled ORT/OpenCV symbols cannot collide with OBS or other plugins. CI matrix: ubuntu-24.04 only.
+Symbol export hygiene: `-Bsymbolic` + version script so bundled ORT/OpenCV symbols cannot collide with OBS or other plugins. CI: ubuntu-24.04 only.
 
 ## 11. Testing
 
