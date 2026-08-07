@@ -211,6 +211,11 @@ if(BUILD_TESTING)
     URL_HASH SHA256=7b42b4d6ed48810c5362c265a17faebe90dc2373c885e5216439d37927f02926
   )
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  # Keep gtest/gmock out of the install tree (and thus out of CPack
+  # tarballs/debs). The tests still build and run; only the install
+  # rules GoogleTest would otherwise register are suppressed.
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+  set(INSTALL_GMOCK OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
 
   include(GoogleTest)
@@ -240,3 +245,45 @@ if(BUILD_TESTING)
   set_target_properties(fx_tests PROPERTIES BUILD_RPATH ${ORT_ROOT}/lib)
   gtest_discover_tests(fx_tests)
 endif()
+
+# --- CPack: tarball (per-user) + deb (system install) ---
+# Configured here (after the install rules) because include(CPack)
+# snapshots the CPACK_* variables into CPackConfig.cmake at this point.
+set(CPACK_GENERATOR "TGZ;DEB")
+set(CPACK_PACKAGE_NAME "obs-cam-effects")
+set(CPACK_PACKAGE_VERSION "${CMAKE_PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+	"Real-time camera effects for OBS Studio: background blur, replacement, face swap")
+set(CPACK_PACKAGE_FILE_NAME
+	"obs-cam-effects-${CMAKE_PROJECT_VERSION}-linux")
+set(CPACK_PACKAGE_CONTACT "obs-cam-effects contributors")
+# No source package — only binary tarball/deb are released.
+set(CPACK_SOURCE_GENERATOR "")
+# The per-user install DESTINATIONs already embed the "obs-cam-effects/"
+# plugin dir, so do NOT let CPack add another toplevel directory (it
+# would double-nest to obs-cam-effects/obs-cam-effects/...). The
+# template's system install rules additionally produce lib/ and share/
+# entries in the tarball; release notes tell users to extract only the
+# obs-cam-effects/ directory.
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+# Emit artifacts into the build directory so `cpack` followed by
+# `ls obs-cam-effects-*` in the build dir finds them.
+set(CPACK_OUTPUT_FILE_PREFIX "${CMAKE_BINARY_DIR}")
+set(CPACK_VERBATIM_VARIABLES YES)
+set(CPACK_ARCHIVE_THREADS 0)
+
+# DEB-specific metadata. SHLIBDEPS is OFF because dpkg-shlibdeps cannot
+# resolve the bundled libonnxruntime.so.1 (not a Debian package); we
+# declare the dependency explicitly instead.
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libobs-dev (>= 31)")
+set(CPACK_DEBIAN_PACKAGE_SECTION "video")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "obs-cam-effects contributors")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
+# System install prefix for the .deb. Only consulted when
+# CPACK_SET_DESTDIR=ON (the deb invocation), so the tarball (which runs
+# with CPACK_SET_DESTDIR=OFF) is unaffected and still extracts to
+# obs-cam-effects/. Build the deb with:
+#   cpack -G DEB -DCPACK_SET_DESTDIR=ON
+set(CPACK_INSTALL_PREFIX "/usr")
+
+include(CPack)
