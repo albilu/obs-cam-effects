@@ -135,6 +135,64 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
   BUILD_RPATH "\$ORIGIN;${ORT_ROOT}/lib"
   INSTALL_RPATH "$ORIGIN")
 
+# --- Install rules (per-user plugin layout) ---
+# DESTINATIONs embed the "obs-cam-effects/" plugin dir so
+#   cmake --install build_x86_64 --prefix ~/.config/obs-studio/plugins
+# yields ~/.config/obs-studio/plugins/obs-cam-effects/bin/64bit/...
+install(TARGETS ${CMAKE_PROJECT_NAME}
+	LIBRARY DESTINATION obs-cam-effects/bin/64bit)
+
+# CPU ORT runtime + libonnxruntime.so.1 symlink, with a GPU-build
+# preservation guard (mirrors build-aux/install-local.sh). The GPU
+# build's libonnxruntime.so.${ORT_VERSION} shares its filename with
+# the CPU build; overwriting it would regress CUDA. If the installed
+# lib already exports OrtSessionOptionsAppendExecutionProvider_CUDA,
+# keep it and skip the CPU copy + symlink.
+install(CODE "
+set(_ort_dest \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/obs-cam-effects/bin/64bit\")
+set(_keep_gpu NO)
+if(EXISTS \"\${_ort_dest}/libonnxruntime.so.${ORT_VERSION}\")
+  execute_process(
+    COMMAND nm -D \"\${_ort_dest}/libonnxruntime.so.${ORT_VERSION}\"
+    OUTPUT_VARIABLE _nm_out ERROR_QUIET)
+  if(_nm_out MATCHES \"OrtSessionOptionsAppendExecutionProvider_CUDA\")
+    set(_keep_gpu YES)
+  endif()
+endif()
+if(_keep_gpu)
+  message(STATUS \"Keeping existing GPU ORT build in \${_ort_dest}\")
+else()
+  file(INSTALL FILES \"${ORT_ROOT}/lib/libonnxruntime.so.${ORT_VERSION}\"
+    DESTINATION \"\${_ort_dest}\")
+  file(REMOVE \"\${_ort_dest}/libonnxruntime.so.1\")
+  file(CREATE_LINK \"libonnxruntime.so.${ORT_VERSION}\"
+    \"\${_ort_dest}/libonnxruntime.so.1\" SYMBOLIC)
+endif()")
+
+# Effect shaders
+install(DIRECTORY data/effects/
+	DESTINATION obs-cam-effects/data/effects
+	FILES_MATCHING PATTERN "*.effect")
+
+# Locale
+install(FILES data/locale/en-US.ini
+	DESTINATION obs-cam-effects/data/locale)
+
+# Manifest
+install(FILES data/models/manifest.json
+	DESTINATION obs-cam-effects/data/models)
+
+# Bundled models (configure-time downloads). Runtime download models
+# (inswapper_128, rvm_mobilenetv3, w600k) are NOT bundled — fetched on
+# demand by the in-plugin downloader.
+install(FILES
+	"${FX_MODEL_DIR}/pphumanseg_fp32.onnx"
+	"${FX_MODEL_DIR}/pphumanseg_fp32.onnx.license"
+	"${FX_MODEL_DIR}/selfie_segmentation.onnx"
+	"${FX_MODEL_DIR}/selfie_segmentation.onnx.license"
+	"${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx"
+	DESTINATION obs-cam-effects/data/models)
+
 # --- Tests ---
 include(CTest)
 if(BUILD_TESTING)
