@@ -175,3 +175,26 @@ merge against this base.
   31.10 ms (32.2 fps) with decimation — see docs/benchmarks.md.
 - Known gaps: single face only; no GFPGAN (not real-time); inswapper
   quality is 128px (soft by design, sharpness slider mitigates).
+
+## Plan 5 state (packaging & release)
+
+- Distribution: Linux `.tar.gz` (per-user, extract into
+  ~/.config/obs-studio/plugins/obs-cam-effects/) + `.deb` (system
+  install, Depends: libobs-dev >= 31). Both via CPack from the same
+  CMake install rules.
+- CMake install() rules with GPU-preservation guard (nm-based;
+  CPU ORT bundled; GPU build downloaded at runtime).
+- install-local.sh uses `cmake --install` with manual fallback.
+- GitHub Actions: ubuntu-24.04 build + cpack TGZ+DEB + release
+  on tag push with installation/GPU/face-swap instructions.
+- Release notes include CUDA 13 + cuDNN 9 requirement for GPU.
+- Known: CI full validation requires a push to GitHub (local only
+  here); the workflow is YAML-valid and both artifacts build + load
+  locally. The template's `push.yaml` has a permissions cap
+  (contents: read) that would block the release step and a duplicate
+  release job that may overwrite the rich body — both pre-existing
+  template behaviors to resolve before the first tagged release.
+- The `.deb` system install path lacks co-located ORT (ORT is in the
+  per-user layout only); a functional system .deb would need an
+  additional ORT install rule for /usr/lib/. Accepted limitation; the
+  `.tar.gz` is the primary distribution artifact.
