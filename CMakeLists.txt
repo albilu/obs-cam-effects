@@ -147,9 +147,17 @@ install(TARGETS ${CMAKE_PROJECT_NAME}
 # build's libonnxruntime.so.${ORT_VERSION} shares its filename with
 # the CPU build; overwriting it would regress CUDA. If the installed
 # lib already exports OrtSessionOptionsAppendExecutionProvider_CUDA,
-# keep it and skip the CPU copy + symlink.
+# keep it and skip the CPU copy.
+#
+# Paths: file(INSTALL) prepends $ENV{DESTDIR} itself, so it takes
+# ${CMAKE_INSTALL_PREFIX}/... (NO DESTDIR). file(REMOVE) and
+# file(CREATE_LINK) do NOT prepend DESTDIR, so they take
+# $ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/... The symlink refresh is
+# unconditional (mirrors install-local.sh's ln -sf) so a GPU build
+# with a missing/stale libonnxruntime.so.1 still gets a valid link.
 install(CODE "
 set(_ort_dest \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/obs-cam-effects/bin/64bit\")
+set(_ort_install_dest \"\${CMAKE_INSTALL_PREFIX}/obs-cam-effects/bin/64bit\")
 set(_keep_gpu NO)
 if(EXISTS \"\${_ort_dest}/libonnxruntime.so.${ORT_VERSION}\")
   execute_process(
@@ -163,11 +171,11 @@ if(_keep_gpu)
   message(STATUS \"Keeping existing GPU ORT build in \${_ort_dest}\")
 else()
   file(INSTALL FILES \"${ORT_ROOT}/lib/libonnxruntime.so.${ORT_VERSION}\"
-    DESTINATION \"\${_ort_dest}\")
-  file(REMOVE \"\${_ort_dest}/libonnxruntime.so.1\")
-  file(CREATE_LINK \"libonnxruntime.so.${ORT_VERSION}\"
-    \"\${_ort_dest}/libonnxruntime.so.1\" SYMBOLIC)
-endif()")
+    DESTINATION \"\${_ort_install_dest}\")
+endif()
+file(REMOVE \"\${_ort_dest}/libonnxruntime.so.1\")
+file(CREATE_LINK \"libonnxruntime.so.${ORT_VERSION}\"
+  \"\${_ort_dest}/libonnxruntime.so.1\" SYMBOLIC)")
 
 # Effect shaders
 install(DIRECTORY data/effects/
