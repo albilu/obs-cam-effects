@@ -4,14 +4,14 @@
 
 **Goal:** Produce a distributable Linux tarball (bin + data) that users extract into `~/.config/obs-studio/plugins/obs-cam-effects/`, with CMake install rules, CPack tarball generation, and GitHub Actions release CI.
 
-**Architecture:** CMake `install()` rules lay out the per-user plugin structure (bin/64bit/*.so + data/...). CPack packages that into a `.tar.gz`. The CI workflow builds on ubuntu-24.04, runs the test suite, and on tag push produces the tarball as a GitHub release asset. The CPU ORT runtime is bundled in the tarball; the GPU build remains a runtime in-plugin download (not packaged).
+**Architecture:** CMake `install()` rules lay out the per-user plugin structure (bin/64bit/*.so + data/...). CPack generates BOTH a `.tar.gz` (per-user extract) and a `.deb` (system install). The CI workflow builds on ubuntu-24.04, runs the test suite, and on tag push produces both artifacts as GitHub release assets.
 
 **Tech Stack:** CMake (existing presets), CPack, GitHub Actions (existing workflow from obs-plugintemplate, Linux-only).
 
 ## Scope
 
 - CMake install rules: plugin .so + CPU ORT lib (with symlink) + all data files (models, effects, locale, manifest)
-- CPack tarball configuration
+- CPack: `.tar.gz` (per-user) + `.deb` (system install) with proper metadata (maintainer, depends: libobs-dev)
 - install-local.sh updated to use `cmake --install` (or a DESTDIR staging)
 - GitHub Actions: ubuntu-24.04 build + ctest + tarball on tag; release notes with CUDA/cuDNN requirement
 - Closeout: dev-notes + final verification
@@ -113,56 +113,66 @@ git commit -m "feat: CMake install rules for per-user plugin layout"
 **Files:**
 - Modify: `CMakeLists.txt`
 
-- [ ] **Step 1: Add CPack configuration**
+- [ ] **Step 1: Add CPack configuration (both TGZ + DEB)**
 
 Append to CMakeLists.txt (after the install rules):
 
 ```cmake
-# --- CPack tarball ---
-set(CPACK_GENERATOR "TGZ")
+# --- CPack: tarball (per-user) + deb (system install) ---
+set(CPACK_GENERATOR "TGZ;DEB")
 set(CPACK_PACKAGE_NAME "obs-cam-effects")
 set(CPACK_PACKAGE_VERSION "${CMAKE_PROJECT_VERSION}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
 	"Real-time camera effects for OBS Studio: background blur, replacement, face swap")
 set(CPACK_PACKAGE_FILE_NAME
 	"obs-cam-effects-${CMAKE_PROJECT_VERSION}-linux")
+set(CPACK_PACKAGE_CONTACT "obs-cam-effects contributors")
 set(CPACK_SOURCE_GENERATOR "")
-set(CPACK_ARCHIVE_COMPONENT_INSTALL OFF)
 set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+
+# DEB-specific metadata
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libobs-dev (>= 31)")
+set(CPACK_DEBIAN_PACKAGE_SECTION "video")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "obs-cam-effects contributors")
+set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "")
+
 include(CPack)
 ```
 
-The tarball will contain `obs-cam-effects-<version>-linux/obs-cam-effects/{bin,data}/...` — wait, that's one level too deep. The user extracts the tarball and gets `obs-cam-effects-<version>-linux/` with the plugin inside? No — the user wants to extract INTO `~/.config/obs-studio/plugins/obs-cam-effects/`. So the tarball should contain `obs-cam-effects/{bin,data}/...` directly (CPACK_PACKAGE_FILE_NAME sets the archive name; CPACK_INCLUDE_TOPLEVEL_DIRECTORY adds a top dir — set it OFF so the tarball's root IS bin/ + data/). But then the archive's internal name is lost. Compromise: keep the top dir as `obs-cam-effects/` (matching the plugin dir name) so `tar xzf obs-cam-effects-1.0.0-linux.tar.gz -C ~/.config/obs-studio/plugins/` works directly.
+The per-user `.tar.gz` top dir is `obs-cam-effects/` so `tar xzf ...-linux.tar.gz -C ~/.config/obs-studio/plugins/` works directly. The `.deb` installs to the system layout (`/usr/lib/obs-plugins/` + `/usr/share/obs/obs-plugins/`). Both share the same install rules — CPack DEB uses the system prefix paths, TGZ uses the per-user `obs-cam-effects/` dir. Verify the actual top-dir naming for both and adjust if needed (the implementer should `tar tzf` and `dpkg -c` to confirm the layout).
 
-Adjust: `set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)` and ensure the top-level dir is named `obs-cam-effects` (not `obs-cam-effects-1.0.0-linux`). The install prefix is `obs-cam-effects/` — hmm, the top dir name comes from CPACK_PACKAGE_FILE_NAME by default. Override: set `CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON` and the top dir = CPACK_PACKAGE_NAME = "obs-cam-effects". The archive file name = CPACK_PACKAGE_FILE_NAME. Let the implementer test the actual layout and adjust.
-
-- [ ] **Step 2: Build the tarball**
+- [ ] **Step 2: Build both artifacts**
 
 ```bash
-cd build_x86_64 && cpack -G TGZ
-ls -la obs-cam-effects-*.tar.gz
+cd build_x86_64 && cpack -G TGZ && cpack -G DEB
+ls -la obs-cam-effects-*.tar.gz obs-cam-effects-*.deb
 tar tzf obs-cam-effects-*.tar.gz | head -15
+dpkg -c obs-cam-effects-*.deb | head -15
 ```
 
-Expected: tarball contains `obs-cam-effects/bin/64bit/obs-cam-effects.so` etc.
+Expected: tarball contains `obs-cam-effects/bin/64bit/...` + `obs-cam-effects/data/...`; .deb contains `/usr/lib/obs-plugins/...` + `/usr/share/obs/obs-plugins/...`.
 
-- [ ] **Step 3: Verify the tarball installs**
+- [ ] **Step 3: Verify both install**
 
+Tarball (per-user):
 ```bash
 rm -rf ~/.config/obs-studio/plugins/obs-cam-effects
-mkdir -p ~/.config/obs-studio/plugins
 tar xzf build_x86_64/obs-cam-effects-*.tar.gz -C ~/.config/obs-studio/plugins/
-timeout 25 obs --verbose > /tmp/opencode/obs-smoke-p5t2.log 2>&1; true
-grep -c "plugin loaded successfully" /tmp/opencode/obs-smoke-p5t2.log
+timeout 25 obs --verbose > /tmp/opencode/obs-smoke-p5t2a.log 2>&1; true
+grep -c "plugin loaded successfully" /tmp/opencode/obs-smoke-p5t2a.log
 ```
 
-Expected: plugin loads from the tarball-extracted layout.
+Deb (system — needs sudo, skip if unavailable; note in report):
+```bash
+# sudo dpkg -i build_x86_64/obs-cam-effects-*.deb
+# timeout 25 obs --verbose 2>&1 | grep -c "plugin loaded successfully"
+```
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add CMakeLists.txt
-git commit -m "feat: CPack tarball generation"
+git commit -m "feat: CPack tarball + deb generation"
 ```
 
 ---
@@ -239,15 +249,18 @@ The existing workflow (from obs-plugintemplate, trimmed to Linux-only in Plan 1)
 Inspect the existing workflow for the release job structure. Add after the build step:
 
 ```yaml
-      - name: Package tarball
+      - name: Package artifacts
         run: |
           cd build
           cpack -G TGZ
-      - name: Upload tarball
+          cpack -G DEB
+      - name: Upload artifacts
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: build/obs-cam-effects-*.tar.gz
+          files: |
+            build/obs-cam-effects-*.tar.gz
+            build/obs-cam-effects-*.deb
           body: |
             ## obs-cam-effects ${{ github.ref_name }}
 
@@ -335,8 +348,8 @@ git commit -m "docs: plan 5 closeout notes"
 ## Plan 5 Definition of Done
 
 - [ ] CMake install rules produce the correct per-user layout
-- [ ] CPack generates a tarball that extracts and loads in OBS
+- [ ] CPack generates both `.tar.gz` (per-user) and `.deb` (system) that extract/install and load in OBS
 - [ ] install-local.sh uses cmake --install with fallback
-- [ ] GitHub Actions workflow produces a release tarball on tag push (YAML-valid; full CI verification deferred to first push)
-- [ ] Release notes include installation + GPU + face-swap instructions + CUDA/cuDNN requirement
+- [ ] GitHub Actions workflow produces release `.tar.gz` + `.deb` on tag push
+- [ ] Release notes include installation + GPU + face-swap instructions + CUDA/cuDNN requirement (both tarball and deb paths documented)
 - [ ] Git history: one commit per task, clean tree
