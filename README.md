@@ -20,7 +20,7 @@ but the main difference is that obs-cam-effects is designed to bring all these f
 - `sudo dpkg -i obs-cam-effects_1.0.0_amd64.deb` or `tar -xvf obs-cam-effects_1.0.0_amd64.tar.gz ~/.config/obs-studio/plugins` .
 - Add Camera Effects filter to your source in OBS Studio.
 
-## Resources
+## References
 
 - https://github.com/hacksider/Deep-Live-Cam
 - https://github.com/royshil/obs-backgroundremoval
