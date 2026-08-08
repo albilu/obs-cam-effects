@@ -550,13 +550,13 @@ static obs_properties_t *cam_effects_properties(void *data)
 			 "license terms.");
 	obs_properties_add_text(props, "rvm_notice", notice, OBS_TEXT_INFO);
 
-	obs_properties_add_button(props, "download_btn",
-				  "Download Quality model (GPL-3.0, 15 MB)",
-				  cam_effects_download_rvm_clicked);
-	obs_properties_add_button(
+	obs_properties_add_button2(props, "download_btn",
+				   "Download Quality model (GPL-3.0, 15 MB)",
+				   cam_effects_download_rvm_clicked, filter);
+	obs_properties_add_button2(
 		props, "download_cuda_btn",
 		"Download GPU acceleration (MIT, ~240 MB)",
-		cam_effects_download_cuda_clicked);
+		cam_effects_download_cuda_clicked, filter);
 
 	/* --- Face swap --- */
 	bool fs_available = filter && filter->fx &&
@@ -594,10 +594,10 @@ static obs_properties_t *cam_effects_properties(void *data)
 	}
 	obs_properties_add_text(props, "faceswap_notice", fs_notice,
 				OBS_TEXT_INFO);
-	obs_properties_add_button(
+	obs_properties_add_button2(
 		props, "download_faceswap_btn",
 		"Download face swap models (non-commercial, ~450 MB)",
-		cam_effects_download_faceswap_clicked);
+		cam_effects_download_faceswap_clicked, filter);
 
 	/* OBS calls get_properties every time the properties dialog
 	 * opens: recompose the status from live bridge state so the
