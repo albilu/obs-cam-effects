@@ -26,3 +26,6 @@
 
 # Exclude CMake build number cache
 /cmake/.CMakeBuildNumber
+
+# Exclude superpowers planning docs
+/docs/superpowers/
