@@ -180,21 +180,32 @@ merge against this base.
 
 - Distribution: Linux `.tar.gz` (per-user, extract into
   ~/.config/obs-studio/plugins/obs-cam-effects/) + `.deb` (system
-  install, Depends: libobs-dev >= 31). Both via CPack from the same
+  install, Depends: obs-studio >= 31). Both via CPack from the same
   CMake install rules.
 - CMake install() rules with GPU-preservation guard (nm-based;
-  CPU ORT bundled; GPU build downloaded at runtime).
+  CPU ORT bundled; GPU build downloaded at runtime). CPU ORT is
+  co-located with BOTH the per-user plugin (bin/64bit) and the system
+  plugin (lib/x86_64-linux-gnu/obs-plugins), so the .deb loads.
 - install-local.sh uses `cmake --install` with manual fallback.
 - GitHub Actions: ubuntu-24.04 build + cpack TGZ+DEB + release
-  on tag push with installation/GPU/face-swap instructions.
+  on tag push with installation/GPU/face-swap instructions (including
+  the .deb install path + a GPU re-download warning on upgrade).
 - Release notes include CUDA 13 + cuDNN 9 requirement for GPU.
 - Known: CI full validation requires a push to GitHub (local only
   here); the workflow is YAML-valid and both artifacts build + load
-  locally. The template's push.yaml issues are RESOLVED: build-project
+  locally (the .deb previously built but could NOT load — ORT was not
+  co-located with the system plugin; fixed by the system ORT install
+  rule above). The template's push.yaml issues are RESOLVED: build-project
   job now has contents: write (release step can create releases), and
   the duplicate create-release job that would overwrite the rich body
   with checksums has been removed.
-- The `.deb` system install path lacks co-located ORT (ORT is in the
-  per-user layout only); a functional system .deb would need an
-  additional ORT install rule for /usr/lib/. Accepted limitation; the
-  `.tar.gz` is the primary distribution artifact.
+- The .deb contains a junk /usr/obs-cam-effects/ tree (the per-user
+  install rules also fire under the /usr prefix). Accepted: it shares
+  the same install rules as the .tar.gz; harmless clutter.
+- package_source regression fixed: `CPACK_SOURCE_GENERATOR ""` did NOT
+  disable source packaging (CMake treats empty as falsy and substitutes
+  the TBZ2/TGZ/TXZ/TZ defaults), and package-ubuntu runs package_source
+  on every CI build — with no ignore rules, build_x86_64 (ORT ~700MB,
+  models, objects) produced multi-GB archives. Now a single TGZ
+  generator plus CPACK_SOURCE_IGNORE_FILES (build trees, VCS/CI
+  metadata, generated artifacts) keeps it small and fast.

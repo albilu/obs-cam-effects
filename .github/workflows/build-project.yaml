@@ -147,6 +147,13 @@ jobs:
                ```
             3. Restart OBS. Add the "Camera Effects" filter to any source.
 
+            ### Alternative: .deb (system-wide install)
+            ```bash
+            sudo dpkg -i obs-cam-effects-*-linux.deb
+            ```
+
+            > **Upgrading?** If you previously downloaded GPU acceleration, re-download it after upgrading (the new tarball overwrites the bundled ORT).
+
             ### GPU acceleration (optional)
             For CUDA-accelerated segmentation and face swap on NVIDIA GPUs:
             1. Install CUDA 13 runtime + cuDNN 9 system-wide

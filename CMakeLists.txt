@@ -42,43 +42,52 @@ set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_nam
 set(ORT_VERSION 1.28.0)
 set(ORT_ROOT ${CMAKE_BINARY_DIR}/onnxruntime)
 if(NOT EXISTS "${ORT_ROOT}/lib/libonnxruntime.so.${ORT_VERSION}")
-  file(DOWNLOAD
-    "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
+  file(
+    DOWNLOAD
+      "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
     ${CMAKE_BINARY_DIR}/ort-${ORT_VERSION}.tgz
     EXPECTED_HASH SHA256=a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407
-    SHOW_PROGRESS)
-  file(ARCHIVE_EXTRACT INPUT ${CMAKE_BINARY_DIR}/ort-${ORT_VERSION}.tgz
-       DESTINATION ${CMAKE_BINARY_DIR})
+    SHOW_PROGRESS
+  )
+  file(ARCHIVE_EXTRACT INPUT ${CMAKE_BINARY_DIR}/ort-${ORT_VERSION}.tgz DESTINATION ${CMAKE_BINARY_DIR})
   file(RENAME ${CMAKE_BINARY_DIR}/onnxruntime-linux-x64-${ORT_VERSION} ${ORT_ROOT})
 endif()
 
 add_library(onnxruntime SHARED IMPORTED GLOBAL)
-set_target_properties(onnxruntime PROPERTIES
-  IMPORTED_LOCATION ${ORT_ROOT}/lib/libonnxruntime.so.${ORT_VERSION}
-  INTERFACE_INCLUDE_DIRECTORIES ${ORT_ROOT}/include)
+set_target_properties(
+  onnxruntime
+  PROPERTIES
+    IMPORTED_LOCATION ${ORT_ROOT}/lib/libonnxruntime.so.${ORT_VERSION}
+    INTERFACE_INCLUDE_DIRECTORIES ${ORT_ROOT}/include
+)
 
 # --- Bundled segmentation model: PP-HumanSeg v2 lite (Apache-2.0) ---
 set(FX_MODEL_DIR ${CMAKE_BINARY_DIR}/models)
 if(NOT EXISTS "${FX_MODEL_DIR}/pphumanseg_fp32.onnx")
-  file(DOWNLOAD
-    "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/pphumanseg_fp32.onnx"
+  file(
+    DOWNLOAD "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/pphumanseg_fp32.onnx"
     ${FX_MODEL_DIR}/pphumanseg_fp32.onnx
-    EXPECTED_HASH SHA256=6913acd125be55fd08e76072ed464146925223392954c437f3aa700e4da84b17)
-  file(DOWNLOAD
-    "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/pphumanseg_fp32.onnx.license"
+    EXPECTED_HASH SHA256=6913acd125be55fd08e76072ed464146925223392954c437f3aa700e4da84b17
+  )
+  file(
+    DOWNLOAD "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/pphumanseg_fp32.onnx.license"
     ${FX_MODEL_DIR}/pphumanseg_fp32.onnx.license
-    EXPECTED_HASH SHA256=363552428d64011b9242e0889f90e06cf2c30370908a2a9641dbdd8d37a5f2a6)
+    EXPECTED_HASH SHA256=363552428d64011b9242e0889f90e06cf2c30370908a2a9641dbdd8d37a5f2a6
+  )
 endif()
 
 # --- Bundled segmentation model: MediaPipe Selfie Seg (Apache-2.0, Lite tier) ---
 if(NOT EXISTS "${FX_MODEL_DIR}/selfie_segmentation.onnx")
-  file(DOWNLOAD
-    "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/selfie_segmentation.onnx"
+  file(
+    DOWNLOAD "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/selfie_segmentation.onnx"
     ${FX_MODEL_DIR}/selfie_segmentation.onnx
-    EXPECTED_HASH SHA256=1511ab5564cb0ae179cba9bcad6ad931003ccc71656f11fd270967023678c6a5)
-  file(DOWNLOAD
-    "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/selfie_segmentation.onnx.license"
-    ${FX_MODEL_DIR}/selfie_segmentation.onnx.license)
+    EXPECTED_HASH SHA256=1511ab5564cb0ae179cba9bcad6ad931003ccc71656f11fd270967023678c6a5
+  )
+  file(
+    DOWNLOAD
+      "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/selfie_segmentation.onnx.license"
+    ${FX_MODEL_DIR}/selfie_segmentation.onnx.license
+  )
 endif()
 
 # --- Bundled face detector: YuNet 2023mar (Apache-2.0) ---
@@ -89,16 +98,20 @@ endif()
 # https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
 # (same hash).
 if(NOT EXISTS "${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx")
-  file(DOWNLOAD
-    "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+  file(
+    DOWNLOAD
+      "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
     ${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx
-    EXPECTED_HASH SHA256=8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4)
+    EXPECTED_HASH SHA256=8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4
+  )
 endif()
 
 find_package(Threads REQUIRED)
 
 # --- libfx: OBS-free core library (all inference code lives here from Plan 2) ---
-add_library(fx STATIC
+add_library(
+  fx
+  STATIC
   src/fx/version.cpp
   src/fx/engine/ep_probe.cpp
   src/fx/engine/ort_backend.cpp
@@ -117,30 +130,29 @@ add_library(fx STATIC
 )
 target_include_directories(fx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(fx PUBLIC cxx_std_17)
-set_target_properties(fx PROPERTIES POSITION_INDEPENDENT_CODE ON
-                                    BUILD_RPATH ${ORT_ROOT}/lib)
+set_target_properties(fx PROPERTIES POSITION_INDEPENDENT_CODE ON BUILD_RPATH ${ORT_ROOT}/lib)
 # libatomic: __atomic_load_16 etc. for std::atomic<MaskParams> (16 bytes)
 # ${CMAKE_DL_LIBS}: dlsym() lives in libdl on glibc < 2.34 (EpProbe/ OrtModel
 # resolve the classic CUDA append symbol at runtime)
 target_link_libraries(fx PUBLIC onnxruntime Threads::Threads atomic ${CMAKE_DL_LIBS})
-target_compile_definitions(fx PUBLIC
-  FX_MODEL_PATH="${FX_MODEL_DIR}/pphumanseg_fp32.onnx"
-  FX_MEDIAPIPE_MODEL_PATH="${FX_MODEL_DIR}/selfie_segmentation.onnx"
-  FX_RVM_MODEL_PATH="${FX_MODEL_DIR}/rvm_mobilenetv3_fp32.onnx"
-  FX_ARCFACE_PATH="${FX_MODEL_DIR}/w600k_r50.onnx"
-  FX_INSWAPPER_PATH="${FX_MODEL_DIR}/inswapper_128.onnx"
-  FX_YUNET_MODEL_PATH="${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx")
+target_compile_definitions(
+  fx
+  PUBLIC
+    FX_MODEL_PATH="${FX_MODEL_DIR}/pphumanseg_fp32.onnx"
+    FX_MEDIAPIPE_MODEL_PATH="${FX_MODEL_DIR}/selfie_segmentation.onnx"
+    FX_RVM_MODEL_PATH="${FX_MODEL_DIR}/rvm_mobilenetv3_fp32.onnx"
+    FX_ARCFACE_PATH="${FX_MODEL_DIR}/w600k_r50.onnx"
+    FX_INSWAPPER_PATH="${FX_MODEL_DIR}/inswapper_128.onnx"
+    FX_YUNET_MODEL_PATH="${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx"
+)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE fx)
-set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
-  BUILD_RPATH "\$ORIGIN;${ORT_ROOT}/lib"
-  INSTALL_RPATH "$ORIGIN")
+set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES BUILD_RPATH "\$ORIGIN;${ORT_ROOT}/lib" INSTALL_RPATH "$ORIGIN")
 
 # --- Install rules (per-user plugin layout) ---
 # DESTINATIONs embed the "obs-cam-effects/" plugin dir so
 #   cmake --install build_x86_64 --prefix ~/.config/obs-studio/plugins
 # yields ~/.config/obs-studio/plugins/obs-cam-effects/bin/64bit/...
-install(TARGETS ${CMAKE_PROJECT_NAME}
-	LIBRARY DESTINATION obs-cam-effects/bin/64bit)
+install(TARGETS ${CMAKE_PROJECT_NAME} LIBRARY DESTINATION obs-cam-effects/bin/64bit)
 
 # CPU ORT runtime + libonnxruntime.so.1 symlink, with a GPU-build
 # preservation guard (mirrors build-aux/install-local.sh). The GPU
@@ -155,7 +167,9 @@ install(TARGETS ${CMAKE_PROJECT_NAME}
 # $ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/... The symlink refresh is
 # unconditional (mirrors install-local.sh's ln -sf) so a GPU build
 # with a missing/stale libonnxruntime.so.1 still gets a valid link.
-install(CODE "
+install(
+  CODE
+    "
 set(_ort_dest \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/obs-cam-effects/bin/64bit\")
 set(_ort_install_dest \"\${CMAKE_INSTALL_PREFIX}/obs-cam-effects/bin/64bit\")
 set(_keep_gpu NO)
@@ -175,31 +189,62 @@ else()
 endif()
 file(REMOVE \"\${_ort_dest}/libonnxruntime.so.1\")
 file(CREATE_LINK \"libonnxruntime.so.${ORT_VERSION}\"
-  \"\${_ort_dest}/libonnxruntime.so.1\" SYMBOLIC)")
+  \"\${_ort_dest}/libonnxruntime.so.1\" SYMBOLIC)"
+)
+
+# CPU ORT runtime + libonnxruntime.so.1 symlink next to the SYSTEM
+# plugin (${CMAKE_INSTALL_LIBDIR}/obs-plugins, installed by the
+# template's set_target_properties_plugin), so the .deb's plugin can
+# dlopen() ORT via its $ORIGIN RUNPATH. Same DESTDIR handling and
+# GPU-preservation guard as the per-user rule above. Under a per-user
+# prefix this lands in the accepted junk lib/ tree (harmless clutter,
+# same as the template's own system install rules).
+install(
+  CODE
+    "
+set(_ort_dest \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/obs-plugins\")
+set(_ort_install_dest \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/obs-plugins\")
+set(_keep_gpu NO)
+if(EXISTS \"\${_ort_dest}/libonnxruntime.so.${ORT_VERSION}\")
+  execute_process(
+    COMMAND nm -D \"\${_ort_dest}/libonnxruntime.so.${ORT_VERSION}\"
+    OUTPUT_VARIABLE _nm_out ERROR_QUIET)
+  if(_nm_out MATCHES \"OrtSessionOptionsAppendExecutionProvider_CUDA\")
+    set(_keep_gpu YES)
+  endif()
+endif()
+if(_keep_gpu)
+  message(STATUS \"Keeping existing GPU ORT build in \${_ort_dest}\")
+else()
+  file(INSTALL FILES \"${ORT_ROOT}/lib/libonnxruntime.so.${ORT_VERSION}\"
+    DESTINATION \"\${_ort_install_dest}\")
+endif()
+file(REMOVE \"\${_ort_dest}/libonnxruntime.so.1\")
+file(CREATE_LINK \"libonnxruntime.so.${ORT_VERSION}\"
+  \"\${_ort_dest}/libonnxruntime.so.1\" SYMBOLIC)"
+)
 
 # Effect shaders
-install(DIRECTORY data/effects/
-	DESTINATION obs-cam-effects/data/effects
-	FILES_MATCHING PATTERN "*.effect")
+install(DIRECTORY data/effects/ DESTINATION obs-cam-effects/data/effects FILES_MATCHING PATTERN "*.effect")
 
 # Locale
-install(FILES data/locale/en-US.ini
-	DESTINATION obs-cam-effects/data/locale)
+install(FILES data/locale/en-US.ini DESTINATION obs-cam-effects/data/locale)
 
 # Manifest
-install(FILES data/models/manifest.json
-	DESTINATION obs-cam-effects/data/models)
+install(FILES data/models/manifest.json DESTINATION obs-cam-effects/data/models)
 
 # Bundled models (configure-time downloads). Runtime download models
 # (inswapper_128, rvm_mobilenetv3, w600k) are NOT bundled — fetched on
 # demand by the in-plugin downloader.
-install(FILES
-	"${FX_MODEL_DIR}/pphumanseg_fp32.onnx"
-	"${FX_MODEL_DIR}/pphumanseg_fp32.onnx.license"
-	"${FX_MODEL_DIR}/selfie_segmentation.onnx"
-	"${FX_MODEL_DIR}/selfie_segmentation.onnx.license"
-	"${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx"
-	DESTINATION obs-cam-effects/data/models)
+install(
+  FILES
+    "${FX_MODEL_DIR}/pphumanseg_fp32.onnx"
+    "${FX_MODEL_DIR}/pphumanseg_fp32.onnx.license"
+    "${FX_MODEL_DIR}/selfie_segmentation.onnx"
+    "${FX_MODEL_DIR}/selfie_segmentation.onnx.license"
+    "${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx"
+  DESTINATION obs-cam-effects/data/models
+)
 
 # --- Tests ---
 include(CTest)
@@ -219,7 +264,8 @@ if(BUILD_TESTING)
   FetchContent_MakeAvailable(googletest)
 
   include(GoogleTest)
-  add_executable(fx_tests
+  add_executable(
+    fx_tests
     tests/test_align.cpp
     tests/test_version.cpp
     tests/test_ort_backend.cpp
@@ -240,8 +286,10 @@ if(BUILD_TESTING)
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
   target_compile_features(fx_tests PRIVATE cxx_std_20)
-  target_compile_definitions(fx_tests PRIVATE
-    FX_FIXTURE_FACE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/face-test.jpg")
+  target_compile_definitions(
+    fx_tests
+    PRIVATE FX_FIXTURE_FACE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/face-test.jpg"
+  )
   set_target_properties(fx_tests PROPERTIES BUILD_RPATH ${ORT_ROOT}/lib)
   gtest_discover_tests(fx_tests)
 endif()
@@ -252,13 +300,30 @@ endif()
 set(CPACK_GENERATOR "TGZ;DEB")
 set(CPACK_PACKAGE_NAME "obs-cam-effects")
 set(CPACK_PACKAGE_VERSION "${CMAKE_PROJECT_VERSION}")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
-	"Real-time camera effects for OBS Studio: background blur, replacement, face swap")
-set(CPACK_PACKAGE_FILE_NAME
-	"obs-cam-effects-${CMAKE_PROJECT_VERSION}-linux")
+set(
+  CPACK_PACKAGE_DESCRIPTION_SUMMARY
+  "Real-time camera effects for OBS Studio: background blur, replacement, face swap"
+)
+set(CPACK_PACKAGE_FILE_NAME "obs-cam-effects-${CMAKE_PROJECT_VERSION}-linux")
 set(CPACK_PACKAGE_CONTACT "obs-cam-effects contributors")
-# No source package — only binary tarball/deb are released.
-set(CPACK_SOURCE_GENERATOR "")
+# Source package: single fast TGZ generator. The ignore list keeps
+# package_source (run unconditionally by .github/scripts/package-ubuntu
+# on every CI build) small — without it the build tree (ORT ~700MB,
+# models, objects) lands in the archive. NOTE: ignore entries are
+# single-backslash regex escapes; include(CPack) re-escapes the value
+# when snapshotting it into the generated CPackSourceConfig.cmake, so
+# what cpack sees matches what is written here.
+set(CPACK_SOURCE_GENERATOR "TGZ")
+set(
+  CPACK_SOURCE_IGNORE_FILES
+  "/build.*/"
+  "\\.git/"
+  "\\.deps/"
+  "\\.github/"
+  "\\.opencode/"
+  "/obs-cam-effects-.*\\.tar\\.gz$"
+  "/obs-cam-effects-.*\\.deb$"
+)
 # The per-user install DESTINATIONs already embed the "obs-cam-effects/"
 # plugin dir, so do NOT let CPack add another toplevel directory (it
 # would double-nest to obs-cam-effects/obs-cam-effects/...). The
@@ -275,7 +340,7 @@ set(CPACK_ARCHIVE_THREADS 0)
 # DEB-specific metadata. SHLIBDEPS is OFF because dpkg-shlibdeps cannot
 # resolve the bundled libonnxruntime.so.1 (not a Debian package); we
 # declare the dependency explicitly instead.
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "libobs-dev (>= 31)")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "obs-studio (>= 31)")
 set(CPACK_DEBIAN_PACKAGE_SECTION "video")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "obs-cam-effects contributors")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)

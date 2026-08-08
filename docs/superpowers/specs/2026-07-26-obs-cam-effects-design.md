@@ -226,7 +226,7 @@ Built on obs-plugintemplate (CMake presets, `buildspec.json` pinned to oldest su
 
 | Artifact | Specifics |
 |---|---|
-| `.deb` (CPack DEB) | System install: `/usr/lib/obs-plugins/` + `/usr/share/obs/obs-plugins/obs-cam-effects/` data dir; ORT/OpenCV bundled with `$ORIGIN` RPATH |
+| `.deb` (CPack DEB) | System install: `/usr/lib/obs-plugins/` + `/usr/share/obs/obs-plugins/obs-cam-effects/` data dir; ORT bundled with `$ORIGIN` RPATH (system plugin dir) |
 | `.tar.gz` (bin + data) | Per-user install: extract into `~/.config/obs-studio/plugins/obs-cam-effects/`; `bin/64bit/*.so` + `data/{effects,locale,models}`. CPU ORT bundled next to the plugin .so; GPU build is a runtime download, not in either artifact. |
 
 Symbol export hygiene: `-Bsymbolic` + version script so bundled ORT/OpenCV symbols cannot collide with OBS or other plugins. CI: ubuntu-24.04 only.
