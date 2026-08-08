@@ -190,10 +190,10 @@ merge against this base.
 - Release notes include CUDA 13 + cuDNN 9 requirement for GPU.
 - Known: CI full validation requires a push to GitHub (local only
   here); the workflow is YAML-valid and both artifacts build + load
-  locally. The template's `push.yaml` has a permissions cap
-  (contents: read) that would block the release step and a duplicate
-  release job that may overwrite the rich body — both pre-existing
-  template behaviors to resolve before the first tagged release.
+  locally. The template's push.yaml issues are RESOLVED: build-project
+  job now has contents: write (release step can create releases), and
+  the duplicate create-release job that would overwrite the rich body
+  with checksums has been removed.
 - The `.deb` system install path lacks co-located ORT (ORT is in the
   per-user layout only); a functional system .deb would need an
   additional ORT install rule for /usr/lib/. Accepted limitation; the
