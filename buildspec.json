@@ -23,7 +23,7 @@
     },
     "name": "obs-cam-effects",
     "displayName": "Plugin Template for OBS",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "author": "obs-cam-effects contributors",
     "website": "",
     "email": ""
