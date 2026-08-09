@@ -1,6 +1,7 @@
 #include "fx_bridge.h"
 
 #include "fx/engine/ep_probe.h"
+#include "fx/image/align.h"
 #include "fx/models/face_embedder.h"
 #include "fx/models/yunet.h"
 #include "fx/models_dl/downloader.h"
@@ -618,6 +619,48 @@ int cam_fx_quality_available(cam_fx_t *fx)
 		       : 0;
 }
 
+int cam_fx_gpu_build_present(cam_fx_t *fx)
+{
+	if (!fx)
+		return 0;
+	try {
+		std::string binDir = pluginBinDir();
+		if (binDir.empty())
+			return 0;
+		/* The bundled CPU build ships libonnxruntime.so.1.28.0
+		 * under the SAME filename the GPU build uses, so its
+		 * presence proves nothing. The unambiguous marker is the
+		 * CUDA provider lib, which only lands in the bin dir via
+		 * the provider download's extract list. */
+		std::string marker = "libonnxruntime_providers_cuda.so";
+		for (const auto &m : fx->manifest)
+			if (m.id == "ort_cuda_ep_1.28.0" &&
+			    m.kind == "provider" && !m.file.empty())
+				marker = m.file;
+		return fileExists(binDir + "/" + marker) ? 1 : 0;
+	} catch (...) {
+		return 0;
+	}
+}
+
+uint8_t *cam_fx_watermark_badge_rgba(int *w, int *h)
+{
+	if (!w || !h)
+		return nullptr;
+	try {
+		std::vector<uint8_t> px = fx::renderWatermarkBadgeRGBA(*w, *h);
+		if (px.empty())
+			return nullptr;
+		uint8_t *buf = (uint8_t *)bmalloc(px.size());
+		if (!buf)
+			return nullptr;
+		memcpy(buf, px.data(), px.size());
+		return buf;
+	} catch (...) {
+		return nullptr;
+	}
+}
+
 void cam_fx_set_mask_params(cam_fx_t *fx, float threshold, float contour,
 			    float feather, float beta)
 {
@@ -744,6 +787,17 @@ int cam_fx_faceswap_missing(cam_fx_t *fx, char *buf, int buf_len)
 	return reason[0] ? 1 : 0;
 }
 
+int cam_fx_faceswap_models_present(cam_fx_t *fx)
+{
+	if (!fx)
+		return 0;
+	try {
+		return faceswapModelsPresent(fx) ? 1 : 0;
+	} catch (...) {
+		return 0;
+	}
+}
+
 void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled)
 {
 	if (!fx || !fx->worker)
@@ -833,8 +887,7 @@ int cam_fx_faceswap_set_source(cam_fx_t *fx, const char *image_path)
 }
 
 void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity,
-				float sharpness, int preserve_mouth,
-				int watermark)
+				float sharpness, int preserve_mouth)
 {
 	if (!fx)
 		return;
@@ -842,7 +895,6 @@ void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity,
 		fx->swapParams.intensity = intensity;
 		fx->swapParams.sharpness = sharpness;
 		fx->swapParams.mouthPreserve = (float)preserve_mouth / 100.0f;
-		fx->swapParams.watermark = watermark != 0;
 		if (fx->swapPipeline) {
 			std::lock_guard<std::mutex> lk(*fx->swapM);
 			fx->swapPipeline->setParams(fx->swapParams);

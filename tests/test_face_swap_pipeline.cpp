@@ -103,7 +103,6 @@ TEST(FaceSwapPipeline, DetectEveryNStillSwapsEveryFrame)
 	pipe.setSourceEmbedding(emb.embed(crop));
 	fx::FaceSwapParams params;
 	params.detectEveryN = 2;
-	params.watermark = false;
 	pipe.setParams(params);
 
 	/* Frame 0 detects; frames 1 and 3 reuse the box; frame 2
@@ -164,11 +163,6 @@ TEST(FaceSwapPipeline, NoBleedOutsideFaceRegion)
 	fx::FaceEmbedder emb(FX_ARCFACE_PATH, FX_INSWAPPER_PATH, 1);
 	std::vector<uint8_t> crop(112 * 112 * 3, 128);
 	pipe.setSourceEmbedding(emb.embed(crop));
-	/* The watermark badge stamps the bottom-right corner — outside the
-	 * face region by design; this test isolates the swap blend. */
-	fx::FaceSwapParams params;
-	params.watermark = false;
-	pipe.setParams(params);
 
 	ASSERT_TRUE(pipe.process(f)) << "fixture face must be swapped";
 

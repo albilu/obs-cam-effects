@@ -52,4 +52,11 @@ void restoreMouthRegion(uint8_t *img, const uint8_t *orig, int w, int h, int cha
  * the bottom-right corner, ~2.5% of frame width. No-op if too small. */
 void stampWatermarkAI(uint8_t *img, int w, int h, int channels);
 
+/* Render the "AI" disclosure badge (same 5x7 bitmaps + dark rounded box
+ * as stampWatermarkAI, fixed scale 4 -> 52x36) into a fresh
+ * tightly-packed RGBA buffer: fully transparent padding,
+ * semi-transparent dark box, white glyphs. Sets outW/outH (0 on
+ * failure). Used for the filter-side post-composite overlay. */
+std::vector<uint8_t> renderWatermarkBadgeRGBA(int &outW, int &outH);
+
 } // namespace fx

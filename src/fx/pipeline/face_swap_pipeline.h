@@ -15,14 +15,15 @@ struct FaceSwapParams {
 	float intensity = 1.0f;   // 0..1 swap opacity (amendment 9)
 	float sharpness = 0.0f;   // 0..1 unsharp amount (amendment 9)
 	float mouthPreserve = 0.0f; // 0..1 mouth-restore strength (amendment 9)
-	bool watermark = true;      // AI disclosure badge (spec §9)
 	float bboxEma = 0.7f;       // detection smoothing
 	int detectEveryN = 2;       // YuNet every Nth frame (<=1: every frame)
 };
 
 /* YuNet detect (bbox EMA) -> umeyama align -> inswapper -> paste-back
  * (feathered ellipse from the swap affine, DLC anti-wobble pattern) ->
- * optional mouth restore / intensity / watermark. Owns its models. */
+ * optional mouth restore / intensity. Owns its models. The AI
+ * disclosure badge (spec §9) is a filter-side post-composite overlay,
+ * not stamped here. */
 class FaceSwapPipeline {
 public:
 	FaceSwapPipeline(const std::string &yunetPath,

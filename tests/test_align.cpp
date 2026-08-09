@@ -115,3 +115,29 @@ TEST(Watermark, StampsPixels)
 		anyLit |= (v > 200);
 	ASSERT_TRUE(anyLit);
 }
+
+TEST(WatermarkBadge, RgbaTransparentCornersLitGlyphsCorrectDims)
+{
+	int w = 0, h = 0;
+	std::vector<uint8_t> px = fx::renderWatermarkBadgeRGBA(w, h);
+	ASSERT_EQ(w, 52);
+	ASSERT_EQ(h, 36);
+	ASSERT_EQ(px.size(), (size_t)w * (size_t)h * 4);
+	auto alphaAt = [&](int x, int y) {
+		return px[((size_t)y * (size_t)w + (size_t)x) * 4 + 3];
+	};
+	/* All four corners are knocked out (rounded box) -> alpha 0. */
+	ASSERT_EQ(alphaAt(0, 0), 0);
+	ASSERT_EQ(alphaAt(w - 1, 0), 0);
+	ASSERT_EQ(alphaAt(0, h - 1), 0);
+	ASSERT_EQ(alphaAt(w - 1, h - 1), 0);
+	/* Lit opaque-white glyph pixels, and semi-transparent dark box. */
+	bool anyLit = false, anySemi = false;
+	for (size_t i = 0; i < (size_t)w * (size_t)h; i++) {
+		uint8_t a = px[i * 4 + 3];
+		anyLit |= a == 255 && px[i * 4] > 200;
+		anySemi |= a > 0 && a < 255;
+	}
+	ASSERT_TRUE(anyLit);
+	ASSERT_TRUE(anySemi);
+}

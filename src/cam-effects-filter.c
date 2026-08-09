@@ -92,6 +92,9 @@ struct cam_effects_filter {
 	gs_texrender_t *blur_a;         /* half-res ping */
 	gs_texrender_t *blur_b;         /* half-res pong */
 	gs_effect_t *blur_effect;       /* kawase_blur.effect */
+	gs_texture_t *wm_tex;		/* lazy AI badge (graphics thread) */
+	uint32_t wm_w;			/* badge width */
+	uint32_t wm_h;			/* badge height */
 
 	cam_fx_t *fx;
 
@@ -105,7 +108,8 @@ struct cam_effects_filter {
 	gs_image_file_t bg_image;
 	bool bg_loaded;
 
-	atomic_int face_swap; /* 0/1 */
+	atomic_int face_swap;	  /* 0/1 */
+	atomic_int watermark_on;  /* 0/1: AI disclosure badge overlay */
 	char *face_image_path;	  /* current setting */
 	char *face_image_applied; /* last path applied to the bridge */
 };
@@ -133,6 +137,7 @@ static void cam_effects_destroy_graphics(struct cam_effects_filter *filter)
 	gs_texture_destroy(filter->mask_tex);
 	gs_effect_destroy(filter->effect);
 	gs_effect_destroy(filter->blur_effect);
+	gs_texture_destroy(filter->wm_tex);
 	gs_image_file_free(&filter->bg_image);
 	obs_leave_graphics();
 }
@@ -373,6 +378,8 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 	int swap_preserve_mouth = (int)obs_data_get_int(settings, SETTING_SWAP_PRESERVE_MOUTH);
 	bool swap_watermark =
 		obs_data_get_bool(settings, SETTING_SWAP_WATERMARK);
+	atomic_store_explicit(&filter->watermark_on, swap_watermark ? 1 : 0,
+			      memory_order_relaxed);
 
 	/* Free any previous background image (destroys its texture, so
 	 * inside the graphics lock). */
@@ -447,8 +454,7 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 		 * embedding only when the path changed (it runs
 		 * detect+ArcFace on this thread); enable last so a
 		 * lazy build picks up params + pending source. */
-		cam_fx_faceswap_set_params(filter->fx, swap_intensity, swap_sharpness, swap_preserve_mouth,
-					   swap_watermark ? 1 : 0);
+		cam_fx_faceswap_set_params(filter->fx, swap_intensity, swap_sharpness, swap_preserve_mouth);
 		bool src_changed =
 			(filter->face_image_applied == NULL) !=
 				(filter->face_image_path == NULL) ||
@@ -555,13 +561,25 @@ static obs_properties_t *cam_effects_properties(void *data)
 			 "license terms.");
 	obs_properties_add_text(props, "rvm_notice", notice, OBS_TEXT_INFO);
 
-	obs_properties_add_button2(props, "download_btn",
-				   "Download Quality model (GPL-3.0, 15 MB)",
-				   cam_effects_download_rvm_clicked, filter);
-	obs_properties_add_button2(
+	obs_property_t *rvm_btn = obs_properties_add_button2(
+		props, "download_btn",
+		"Download Quality model (GPL-3.0, 15 MB)",
+		cam_effects_download_rvm_clicked, filter);
+	if (filter && filter->fx && cam_fx_quality_available(filter->fx)) {
+		obs_property_set_enabled(rvm_btn, false);
+		obs_property_set_description(rvm_btn,
+					     "Quality model: downloaded ✓");
+	}
+	obs_property_t *cuda_btn = obs_properties_add_button2(
 		props, "download_cuda_btn",
 		"Download GPU acceleration (MIT, ~240 MB)",
 		cam_effects_download_cuda_clicked, filter);
+	if (filter && filter->fx && cam_fx_gpu_build_present(filter->fx)) {
+		obs_property_set_enabled(cuda_btn, false);
+		obs_property_set_description(
+			cuda_btn,
+			"GPU acceleration: downloaded (restart OBS to enable)");
+	}
 
 	/* --- Face swap --- */
 	bool fs_available = filter && filter->fx &&
@@ -598,10 +616,16 @@ static obs_properties_t *cam_effects_properties(void *data)
 	}
 	obs_properties_add_text(props, "faceswap_notice", fs_notice,
 				OBS_TEXT_INFO);
-	obs_properties_add_button2(
+	obs_property_t *fs_dl_btn = obs_properties_add_button2(
 		props, "download_faceswap_btn",
 		"Download face swap models (non-commercial, ~450 MB)",
 		cam_effects_download_faceswap_clicked, filter);
+	if (filter && filter->fx &&
+	    cam_fx_faceswap_models_present(filter->fx)) {
+		obs_property_set_enabled(fs_dl_btn, false);
+		obs_property_set_description(fs_dl_btn,
+					     "Face swap models: downloaded ✓");
+	}
 
 	/* OBS calls get_properties every time the properties dialog
 	 * opens: recompose the status from live bridge state so the
@@ -834,6 +858,54 @@ static gs_texture_t *cam_effects_blur(struct cam_effects_filter *filter,
 	return src;
 }
 
+/* Lazily create the badge texture on the graphics thread (first fs
+ * render with the badge on). The pixels come from the fx core via the
+ * bridge (tightly-packed RGBA, bfree'd after upload). */
+static void cam_effects_ensure_watermark(struct cam_effects_filter *filter)
+{
+	if (filter->wm_tex)
+		return;
+	int bw = 0, bh = 0;
+	uint8_t *px = cam_fx_watermark_badge_rgba(&bw, &bh);
+	if (!px || bw <= 0 || bh <= 0) {
+		bfree(px);
+		return;
+	}
+	const uint8_t *levels[1] = {px};
+	filter->wm_tex = gs_texture_create((uint32_t)bw, (uint32_t)bh,
+					   GS_RGBA, 1, levels, 0);
+	filter->wm_w = (uint32_t)bw;
+	filter->wm_h = (uint32_t)bh;
+	bfree(px);
+}
+
+/* Post-composite AI disclosure badge (spec §9): drawn by the FILTER on
+ * top of the final output, so it survives every background mode — the
+ * old worker-side stamp sat in the background region (mask ~0) of
+ * bg x (1-mask) + frame x mask and was blended away. Also drawn over
+ * the frozen out_render so the freeze failure mode keeps the
+ * disclosure (spec §8/§9). Never drawn on the passthrough path (raw
+ * feed = no AI content). */
+static void cam_effects_draw_watermark(struct cam_effects_filter *filter,
+				       uint32_t w, uint32_t h)
+{
+	if (!filter->wm_tex || w == 0 || h == 0)
+		return;
+	uint32_t wm_w = filter->wm_w, wm_h = filter->wm_h;
+	uint32_t margin = h / 40;
+	if (w < wm_w + margin || h < wm_h + margin)
+		return;
+	gs_matrix_push();
+	gs_matrix_translate3f((float)(w - wm_w - margin),
+			      (float)(h - wm_h - margin), 0.0f);
+	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_eparam_t *image = gs_effect_get_param_by_name(def, "image");
+	gs_effect_set_texture(image, filter->wm_tex);
+	while (gs_effect_loop(def, "Draw"))
+		gs_draw_sprite(filter->wm_tex, 0, wm_w, wm_h);
+	gs_matrix_pop();
+}
+
 static void cam_effects_video_render(void *data, gs_effect_t *effect)
 {
 	UNUSED_PARAMETER(effect);
@@ -880,6 +952,14 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	bool fs = face_swap && filter->fx && w > 0 && h > 0 &&
 		  !oversize && cam_fx_faceswap_available(filter->fx) == 1;
 
+	bool watermark_on = atomic_load_explicit(&filter->watermark_on,
+						 memory_order_relaxed) != 0;
+	/* Disclosure badge gate: face swap on, badge enabled, and a
+	 * swapped-frame composite (or frozen composite) on screen. */
+	bool wm_show = false;
+	if (fs && watermark_on)
+		cam_effects_ensure_watermark(filter);
+
 	if (!fs && (mode == MODE_OFF || w == 0 || h == 0 || !filter->fx)) {
 		if (freeze && mode != MODE_OFF) {
 			cam_effects_draw_out(filter, w ? w : 1920,
@@ -924,7 +1004,12 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	if (!cam_fx_is_fresh(filter->fx, MASK_STALE_MS)) {
 		/* Inference stalled. */
 		if (freeze) {
+			/* The frozen out_render still holds the last swap
+			 * composite: keep the badge visible (§8/§9). */
+			wm_show = fs;
 			cam_effects_draw_out(filter, w, h);
+			if (wm_show && watermark_on)
+				cam_effects_draw_watermark(filter, w, h);
 			return;
 		}
 		obs_source_skip_video_filter(filter->source);
@@ -937,8 +1022,9 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 
 	/* Face swap alone (background off): the swapped frame IS the
 	 * output. Route it through out_render so the freeze failure mode
-	 * shows the last COMPOSITED frame, watermark included (spec
-	 * §8/§9). Draws like cam_effects_draw_out but for frame_tex. */
+	 * shows the last COMPOSITED frame; the disclosure badge is a
+	 * post-composite overlay drawn on top (spec §8/§9). Draws like
+	 * cam_effects_draw_out but for frame_tex. */
 	if (fs && mode == MODE_OFF) {
 		gs_texrender_reset(filter->out_render);
 		if (frame_tex && gs_texrender_begin(filter->out_render, w, h)) {
@@ -959,7 +1045,10 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 			gs_blend_state_pop();
 			gs_texrender_end(filter->out_render);
 		}
+		wm_show = true;
 		cam_effects_draw_out(filter, w, h);
+		if (wm_show && watermark_on)
+			cam_effects_draw_watermark(filter, w, h);
 		return;
 	}
 
@@ -1064,7 +1153,12 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 		gs_blend_state_pop();
 		gs_texrender_end(filter->out_render);
 	}
+	/* Swapped frame composited this tick (fs manual loop only;
+	 * process_filter_begin draws the raw parent). */
+	wm_show = frame_tex != NULL;
 	cam_effects_draw_out(filter, w, h);
+	if (wm_show && watermark_on)
+		cam_effects_draw_watermark(filter, w, h);
 }
 
 static struct obs_source_info cam_effects_filter_info = {

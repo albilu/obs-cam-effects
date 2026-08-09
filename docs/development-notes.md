@@ -156,6 +156,27 @@ merge against this base.
   paste-back -> segmentation. Amendment-9 settings shipped: swap
   intensity, sharpness, preserve-mouth (geometric), AI watermark
   (default ON).
+- Watermark is a filter-side POST-COMPOSITE overlay (2026-08-09): the
+  old stampWatermarkAI call stamped the worker's output frame, but the
+  background-mode composite (bg x (1-mask) + frame x mask) replaced
+  the bottom-right background region, hiding the badge in every
+  background mode. Now the filter lazily uploads an RGBA badge texture
+  (fx::renderWatermarkBadgeRGBA, 52x36: transparent padding, semi-
+  transparent dark box, white glyphs) and draws it on top of the final
+  output on every swap path (background on/off AND the freeze failure
+  mode, where frozen out_render + overlay keeps the disclosure, spec
+  §8/§9); the passthrough path stays badge-free (raw feed, no AI
+  content). FaceSwapParams.watermark and the pipeline stamp call are
+  gone; stampWatermarkAI remains as public fx API (still tested).
+- Download buttons reflect state (2026-08-09): the RVM / GPU /
+  face-swap download buttons disable with a "downloaded ✓" label (GPU:
+  "downloaded (restart OBS to enable)") when their payload is present.
+  GPU presence is a FILE check on libonnxruntime_providers_cuda.so in
+  the plugin bin dir — the CPU build shares libonnxruntime.so.1.28.0's
+  filename so THAT file proves nothing, and EpProbe::cudaAvailable is
+  wrong here because the lib only loads on the next OBS start. The
+  status line already recomposes at dialog open (get_properties ->
+  compose_status) with download state + progress %.
 - Models: **inswapper_128_fp16 is the default download** (278 MB,
   1.65x faster on CUDA than fp32; fp32 graph IO and a bit-identical
   embedded emap = zero-change drop-in, same InsightFace non-commercial

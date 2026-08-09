@@ -231,9 +231,6 @@ bool FaceSwapPipeline::process(Frame &frame)
 		restoreMouthRegion(frame.bgra.data(), origFrame_.data(), w, h, 4, box.landmarks[3], box.landmarks[4],
 				   1.0f, 6, params_.mouthPreserve);
 
-	if (params_.watermark)
-		stampWatermarkAI(frame.bgra.data(), w, h, 4);
-
 	return true;
 }
 

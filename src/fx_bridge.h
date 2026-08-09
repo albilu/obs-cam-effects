@@ -54,6 +54,17 @@ int cam_fx_tier_in_effect(cam_fx_t *fx);
 /* 1 if the quality model file is present at the quality cache path. */
 int cam_fx_quality_available(cam_fx_t *fx);
 
+/* 1 if the GPU (CUDA) onnxruntime build is present in the plugin bin
+ * dir. FILE presence only (deliberately NOT EpProbe::cudaAvailable):
+ * the lib may be downloaded but is only loaded on the next OBS start. */
+int cam_fx_gpu_build_present(cam_fx_t *fx);
+
+/* Renders the "AI" disclosure badge into a freshly allocated,
+ * tightly-packed RGBA buffer (transparent padding, semi-transparent
+ * dark box, white glyphs); *w/*h receive the badge size (~52x36).
+ * Free the returned buffer with bfree(). Returns NULL on failure. */
+uint8_t *cam_fx_watermark_badge_rgba(int *w, int *h);
+
 /* Advanced mask params (see fx::MaskParams). */
 void cam_fx_set_mask_params(cam_fx_t *fx, float threshold, float contour,
 			    float feather, float beta);
@@ -99,6 +110,10 @@ int cam_fx_faceswap_available(cam_fx_t *fx);
  * something is missing, 0 when available. */
 int cam_fx_faceswap_missing(cam_fx_t *fx, char *buf, int buf_len);
 
+/* 1 if both face-swap models (inswapper fp16 or fp32, and w600k_r50)
+ * exist in the models cache, regardless of GPU availability. */
+int cam_fx_faceswap_models_present(cam_fx_t *fx);
+
 /* Enables/disables face swap. The swap pipeline is built lazily on
  * the first enable and building is a no-op while unavailable. */
 void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled);
@@ -109,10 +124,11 @@ void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled);
 int cam_fx_faceswap_set_source(cam_fx_t *fx, const char *image_path);
 
 /* Live swap params (see fx::FaceSwapParams). preserve_mouth is 0-100
- * (0 = off), converted to the 0..1 mouth-restore strength internally. */
+ * (0 = off), converted to the 0..1 mouth-restore strength internally.
+ * The AI disclosure badge is a filter-side post-composite overlay
+ * (spec §9), not a pipeline param. */
 void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity,
-				float sharpness, int preserve_mouth,
-				int watermark);
+				float sharpness, int preserve_mouth);
 
 /* Fetches the latest processed (swapped) frame. Returns 1 if a frame
  * exists, 0 otherwise. On success *bgra points to an internal w*h*4

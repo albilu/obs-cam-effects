@@ -305,4 +305,55 @@ void stampWatermarkAI(uint8_t *img, int w, int h, int channels)
 	}
 }
 
+std::vector<uint8_t> renderWatermarkBadgeRGBA(int &outW, int &outH)
+{
+	/* Fixed scale 4 (52x36 box): the overlay texture has no frame
+	 * size to scale from; this matches stampWatermarkAI at 1080p and
+	 * stays readable down to 640x480. */
+	const int scale = 4;
+	const int glyphW = 5 * scale, glyphH = 7 * scale, gap = scale;
+	const int pad = scale;
+	const int boxW = 2 * glyphW + gap + 2 * pad;
+	const int boxH = glyphH + 2 * pad;
+	outW = boxW;
+	outH = boxH;
+
+	std::vector<uint8_t> buf((size_t)boxW * (size_t)boxH * 4, 0);
+	/* Semi-transparent dark box (same 0.8 alpha as the stamp),
+	 * corners knocked out for a rounded look. */
+	const uint8_t boxA = (uint8_t)std::lround(0.8f * 255.0f);
+	for (int y = 0; y < boxH; y++) {
+		for (int x = 0; x < boxW; x++) {
+			bool corner = (x == 0 || x == boxW - 1) &&
+				      (y == 0 || y == boxH - 1);
+			if (corner)
+				continue;
+			buf[((size_t)y * (size_t)boxW + (size_t)x) * 4 + 3] =
+				boxA;
+		}
+	}
+	/* Opaque white glyphs. */
+	const uint8_t *glyphs[2] = {GLYPH_A, GLYPH_I};
+	for (int gi = 0; gi < 2; gi++) {
+		int ox = pad + gi * (glyphW + gap);
+		for (int row = 0; row < 7; row++) {
+			for (int col = 0; col < 5; col++) {
+				if (!(glyphs[gi][row] & (0x10 >> col)))
+					continue;
+				for (int sy = 0; sy < scale; sy++)
+					for (int sx = 0; sx < scale; sx++) {
+						size_t i = ((size_t)(pad + row * scale + sy) * (size_t)boxW +
+							    (size_t)(ox + col * scale + sx)) *
+							   4;
+						buf[i + 0] = 255;
+						buf[i + 1] = 255;
+						buf[i + 2] = 255;
+						buf[i + 3] = 255;
+					}
+			}
+		}
+	}
+	return buf;
+}
+
 } // namespace fx
