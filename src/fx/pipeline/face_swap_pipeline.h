@@ -14,7 +14,7 @@ namespace fx {
 struct FaceSwapParams {
 	float intensity = 1.0f;   // 0..1 swap opacity (amendment 9)
 	float sharpness = 0.0f;   // 0..1 unsharp amount (amendment 9)
-	bool preserveMouth = false; // geometric mouth restore (amendment 9)
+	float mouthPreserve = 0.0f; // 0..1 mouth-restore strength (amendment 9)
 	bool watermark = true;      // AI disclosure badge (spec §9)
 	float bboxEma = 0.7f;       // detection smoothing
 	int detectEveryN = 2;       // YuNet every Nth frame (<=1: every frame)

@@ -43,10 +43,11 @@ void unsharpMask(uint8_t *img, int w, int h, int channels, int radius,
 		 float amount);
 
 /* Composite `origMouth` (same geometry) back over `img` inside an
- * ellipse centered between mouth landmarks, feathered. */
+ * ellipse centered between mouth landmarks, feathered. `strength`
+ * (0..1) scales the ellipse alpha (0 = no restore, 1 = full). */
 void restoreMouthRegion(uint8_t *img, const uint8_t *orig, int w, int h,
 			int channels, Point2 mouthL, Point2 mouthR,
-			float widthScale, int feather);
+			float widthScale, int feather, float strength);
 
 /* Stamp a small "AI" disclosure badge (white on black rounded box) at
  * the bottom-right corner, ~2.5% of frame width. No-op if too small. */

@@ -841,7 +841,7 @@ void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity,
 	try {
 		fx->swapParams.intensity = intensity;
 		fx->swapParams.sharpness = sharpness;
-		fx->swapParams.preserveMouth = preserve_mouth != 0;
+		fx->swapParams.mouthPreserve = (float)preserve_mouth / 100.0f;
 		fx->swapParams.watermark = watermark != 0;
 		if (fx->swapPipeline) {
 			std::lock_guard<std::mutex> lk(*fx->swapM);

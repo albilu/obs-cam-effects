@@ -108,7 +108,8 @@ void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled);
  * missing). */
 int cam_fx_faceswap_set_source(cam_fx_t *fx, const char *image_path);
 
-/* Live swap params (see fx::FaceSwapParams). */
+/* Live swap params (see fx::FaceSwapParams). preserve_mouth is 0-100
+ * (0 = off), converted to the 0..1 mouth-restore strength internally. */
 void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity,
 				float sharpness, int preserve_mouth,
 				int watermark);

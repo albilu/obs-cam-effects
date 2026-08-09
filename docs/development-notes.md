@@ -175,6 +175,14 @@ merge against this base.
   31.10 ms (32.2 fps) with decimation — see docs/benchmarks.md.
 - Known gaps: single face only; no GFPGAN (not real-time); inswapper
   quality is 128px (soft by design, sharpness slider mitigates).
+- Polish (2026-08-09): blur strength slider max raised 4 -> 7 (more
+  Kawase passes). New "Green Screen" background mode: solid-color
+  composite via the DrawSolidColor technique in mask_composite.effect;
+  color picker setting `greenscreen_color`, default green 0xFF00FF00
+  (OBS color properties are 0xAABBGGRR, unpacked with vec4_from_rgba).
+  Preserve-mouth is now a 0-100 slider (default 0; was a bool
+  checkbox): the bridge converts /100 into FaceSwapParams.mouthPreserve
+  (0..1 float), which scales the restoreMouthRegion ellipse alpha.
 
 ## Plan 5 state (packaging & release)
 

@@ -3,6 +3,7 @@ uniform texture2d image;
 uniform texture2d mask;
 uniform texture2d bg_image;
 uniform texture2d blur_image;
+uniform float4 solid_color;
 
 sampler_state def_sampler {
 	Filter = Linear;
@@ -46,6 +47,13 @@ float4 DrawBlur(VertData v_in) : TARGET
 	return float4(blurred.rgb * (1.0 - a) + sharp.rgb * a, sharp.a);
 }
 
+float4 DrawSolidColor(VertData v_in) : TARGET
+{
+	float4 rgba = image.Sample(def_sampler, v_in.uv);
+	float a = mask.Sample(def_sampler, v_in.uv).r;
+	return float4(solid_color.rgb * (1.0 - a) + rgba.rgb * a, rgba.a);
+}
+
 technique DrawTransparent
 {
 	pass
@@ -70,5 +78,14 @@ technique DrawBlur
 	{
 		vertex_shader = mainTransform(v_in);
 		pixel_shader = DrawBlur(v_in);
+	}
+}
+
+technique DrawSolidColor
+{
+	pass
+	{
+		vertex_shader = mainTransform(v_in);
+		pixel_shader = DrawSolidColor(v_in);
 	}
 }

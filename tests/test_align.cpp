@@ -92,9 +92,20 @@ TEST(RestoreMouthRegion, OnlyMouthRestored)
 	const int w = 32, h = 32, ch = 3;
 	std::vector<uint8_t> img(w * h * ch, 200), orig(w * h * ch, 50);
 	fx::restoreMouthRegion(img.data(), orig.data(), w, h, ch, {10, 24},
-			       {22, 24}, 1.0f, 2);
+			       {22, 24}, 1.0f, 2, 1.0f);
 	ASSERT_EQ(img[(24 * w + 16) * 3], 50);	 // mouth center restored
 	ASSERT_EQ(img[(4 * w + 4) * 3], 200);	 // far away untouched
+}
+
+TEST(RestoreMouthRegion, HalfStrengthBlendsHalfway)
+{
+	const int w = 32, h = 32, ch = 3;
+	std::vector<uint8_t> img(w * h * ch, 200), orig(w * h * ch, 50);
+	fx::restoreMouthRegion(img.data(), orig.data(), w, h, ch, {10, 24},
+			       {22, 24}, 1.0f, 2, 0.5f);
+	/* center: ellipse alpha 1.0 scaled by 0.5 -> 50*0.5 + 200*0.5 */
+	ASSERT_EQ(img[(24 * w + 16) * 3], 125); // blended halfway
+	ASSERT_EQ(img[(4 * w + 4) * 3], 200);	// far away untouched
 }
 
 TEST(Watermark, StampsPixels)
