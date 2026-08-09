@@ -1,5 +1,7 @@
 ## obs-cam-effects
 
+![screenshot](screenshot.png)
+
 obs-cam-effects is a plugin for OBS Studio that allows you to apply following 3 filters to your source:
 
 - background blurring effects
