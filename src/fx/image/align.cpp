@@ -203,8 +203,7 @@ void unsharpMask(uint8_t *img, int w, int h, int channels, int radius,
 	}
 }
 
-void restoreMouthRegion(uint8_t *img, const uint8_t *orig, int w, int h,
-			int channels, Point2 mouthL, Point2 mouthR,
+void restoreMouthRegion(uint8_t *img, const uint8_t *orig, int w, int h, int channels, Point2 mouthL, Point2 mouthR,
 			float widthScale, int feather, float strength)
 {
 	float cx = (mouthL[0] + mouthR[0]) * 0.5f;

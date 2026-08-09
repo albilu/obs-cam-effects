@@ -11,6 +11,7 @@
 #define SETTING_MODE "mode"
 #define SETTING_IMAGE_PATH "image_path"
 #define SETTING_BLUR_STRENGTH "blur_strength"
+#define SETTING_GREENSCREEN_COLOR "greenscreen_color"
 #define SETTING_FAILURE "failure_mode"
 #define SETTING_STATUS "status"
 #define SETTING_TIER "tier"
@@ -339,10 +340,8 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 			      memory_order_relaxed);
 	atomic_store_explicit(&filter->failure_id, parse_failure(failure),
 			      memory_order_relaxed);
-	atomic_store_explicit(
-		&filter->greenscreen_color,
-		(int)obs_data_get_int(settings, "greenscreen_color"),
-		memory_order_relaxed);
+	atomic_store_explicit(&filter->greenscreen_color, (int)obs_data_get_int(settings, SETTING_GREENSCREEN_COLOR),
+			      memory_order_relaxed);
 	bfree(mode);
 	bfree(failure);
 
@@ -371,8 +370,7 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 		(float)obs_data_get_double(settings, SETTING_SWAP_INTENSITY);
 	float swap_sharpness =
 		(float)obs_data_get_double(settings, SETTING_SWAP_SHARPNESS);
-	int swap_preserve_mouth =
-		(int)obs_data_get_int(settings, SETTING_SWAP_PRESERVE_MOUTH);
+	int swap_preserve_mouth = (int)obs_data_get_int(settings, SETTING_SWAP_PRESERVE_MOUTH);
 	bool swap_watermark =
 		obs_data_get_bool(settings, SETTING_SWAP_WATERMARK);
 
@@ -449,8 +447,7 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 		 * embedding only when the path changed (it runs
 		 * detect+ArcFace on this thread); enable last so a
 		 * lazy build picks up params + pending source. */
-		cam_fx_faceswap_set_params(filter->fx, swap_intensity,
-					   swap_sharpness, swap_preserve_mouth,
+		cam_fx_faceswap_set_params(filter->fx, swap_intensity, swap_sharpness, swap_preserve_mouth,
 					   swap_watermark ? 1 : 0);
 		bool src_changed =
 			(filter->face_image_applied == NULL) !=
@@ -482,7 +479,7 @@ static void cam_effects_get_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, SETTING_MODE, "transparent");
 	obs_data_set_default_string(settings, SETTING_FAILURE, "passthrough");
 	obs_data_set_default_int(settings, SETTING_BLUR_STRENGTH, 2);
-	obs_data_set_default_int(settings, "greenscreen_color", 0xFF00FF00);
+	obs_data_set_default_int(settings, SETTING_GREENSCREEN_COLOR, 0xFF00FF00);
 	obs_data_set_default_string(settings, SETTING_TIER, "auto");
 	obs_data_set_default_double(settings, SETTING_MASK_THRESHOLD, 0.0);
 	obs_data_set_default_double(settings, SETTING_MASK_CONTOUR, 0.0);
@@ -510,14 +507,12 @@ static obs_properties_t *cam_effects_properties(void *data)
 	obs_property_list_add_string(mode, "Blur", "blur");
 	obs_property_list_add_string(mode, "Green Screen", "green_screen");
 
-	obs_properties_add_color(props, "greenscreen_color",
-				 "Green screen color");
+	obs_properties_add_color(props, SETTING_GREENSCREEN_COLOR, "Green screen color");
 
 	obs_properties_add_path(props, SETTING_IMAGE_PATH, "Background image",
 				OBS_PATH_FILE,
 				"Images (*.png *.jpg *.jpeg *.bmp)", NULL);
-	obs_properties_add_int_slider(props, SETTING_BLUR_STRENGTH,
-				      "Blur strength", 1, 7, 1);
+	obs_properties_add_int_slider(props, SETTING_BLUR_STRENGTH, "Blur strength", 1, 7, 1);
 
 	obs_property_t *tier = obs_properties_add_list(
 		props, SETTING_TIER, "Segmentation model",
@@ -582,8 +577,7 @@ static obs_properties_t *cam_effects_properties(void *data)
 					"Swap intensity", 0.0, 1.0, 0.05);
 	obs_properties_add_float_slider(props, SETTING_SWAP_SHARPNESS,
 					"Swap sharpness", 0.0, 1.0, 0.05);
-	obs_properties_add_int_slider(props, SETTING_SWAP_PRESERVE_MOUTH,
-				      "Preserve mouth region", 0, 100, 1);
+	obs_properties_add_int_slider(props, SETTING_SWAP_PRESERVE_MOUTH, "Preserve mouth region", 0, 100, 1);
 	obs_properties_add_bool(props, SETTING_SWAP_WATERMARK,
 				"AI disclosure badge (recommended)");
 
@@ -984,10 +978,7 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	 * unpacks R from the low byte (the same helper OBS's bundled
 	 * color-correction filter uses). */
 	struct vec4 solid_color;
-	vec4_from_rgba(&solid_color,
-		       (uint32_t)atomic_load_explicit(
-			       &filter->greenscreen_color,
-			       memory_order_relaxed));
+	vec4_from_rgba(&solid_color, (uint32_t)atomic_load_explicit(&filter->greenscreen_color, memory_order_relaxed));
 
 	/* Blur must run before out_render begins (it renders into its
 	 * own texrenders). Fall back to transparent if the kawase effect
@@ -1042,10 +1033,8 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 						filter->effect, "blur_image"),
 					blur);
 			if (mode == MODE_GREEN_SCREEN)
-				gs_effect_set_vec4(
-					gs_effect_get_param_by_name(
-						filter->effect, "solid_color"),
-					&solid_color);
+				gs_effect_set_vec4(gs_effect_get_param_by_name(filter->effect, "solid_color"),
+						   &solid_color);
 			while (gs_effect_loop(filter->effect, tech))
 				gs_draw_sprite(frame_tex, 0, w, h);
 		} else if (obs_source_process_filter_begin(
@@ -1066,10 +1055,8 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 						filter->effect, "blur_image"),
 					blur);
 			if (mode == MODE_GREEN_SCREEN)
-				gs_effect_set_vec4(
-					gs_effect_get_param_by_name(
-						filter->effect, "solid_color"),
-					&solid_color);
+				gs_effect_set_vec4(gs_effect_get_param_by_name(filter->effect, "solid_color"),
+						   &solid_color);
 			obs_source_process_filter_tech_end(filter->source,
 							   filter->effect, w,
 							   h, tech);

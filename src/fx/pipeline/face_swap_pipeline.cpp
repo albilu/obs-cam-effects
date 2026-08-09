@@ -151,8 +151,7 @@ bool FaceSwapPipeline::process(Frame &frame)
 			    params_.sharpness);
 
 	/* Original needed by intensity < 1 and/or mouth restore. */
-	const bool needOrig =
-		params_.intensity < 1.0f || params_.mouthPreserve > 0.0f;
+	const bool needOrig = params_.intensity < 1.0f || params_.mouthPreserve > 0.0f;
 	if (needOrig)
 		origFrame_ = frame.bgra;
 
@@ -229,9 +228,8 @@ bool FaceSwapPipeline::process(Frame &frame)
 	}
 
 	if (params_.mouthPreserve > 0.0f)
-		restoreMouthRegion(frame.bgra.data(), origFrame_.data(), w, h, 4,
-				   box.landmarks[3], box.landmarks[4], 1.0f, 6,
-				   params_.mouthPreserve);
+		restoreMouthRegion(frame.bgra.data(), origFrame_.data(), w, h, 4, box.landmarks[3], box.landmarks[4],
+				   1.0f, 6, params_.mouthPreserve);
 
 	if (params_.watermark)
 		stampWatermarkAI(frame.bgra.data(), w, h, 4);
