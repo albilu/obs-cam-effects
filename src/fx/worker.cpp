@@ -41,9 +41,23 @@ void Worker::stop()
 
 void Worker::setProcessor(Processor processor)
 {
-	std::lock_guard<std::mutex> lk(inM_);
-	pending_.reset();
+	std::lock_guard<std::mutex> inLock(inM_);
 	processor_ = std::move(processor);
+	epoch_++;
+	pending_.reset();
+	std::lock_guard<std::mutex> outLock(outM_);
+	latest_ = {};
+	lastPublishMs_.store(0);
+}
+
+void Worker::invalidate()
+{
+	std::lock_guard<std::mutex> inLock(inM_);
+	epoch_++;
+	pending_.reset();
+	std::lock_guard<std::mutex> outLock(outM_);
+	latest_ = {};
+	lastPublishMs_.store(0);
 }
 
 void Worker::submit(std::shared_ptr<Frame> frame)
@@ -80,6 +94,7 @@ void Worker::loop()
 	while (running_.load()) {
 		std::shared_ptr<Frame> frame;
 		Processor processor;
+		uint64_t epoch;
 		{
 			std::unique_lock<std::mutex> lk(inM_);
 			inCv_.wait(lk, [this] {
@@ -89,10 +104,10 @@ void Worker::loop()
 				break;
 			frame = std::move(pending_);
 			pending_.reset();
-			/* Copy the processor under the same lock so a
-			 * concurrent setProcessor can't tear it; the local
-			 * copy keeps the old pipeline alive mid-call. */
+			/* Capture processor and publication epoch together. The
+			 * local processor keeps an old pipeline alive mid-call. */
 			processor = processor_;
+			epoch = epoch_;
 		}
 		WorkerResult result;
 		try {
@@ -101,7 +116,10 @@ void Worker::loop()
 			continue; // skip publish; staleness signals failure upstream
 		}
 		{
-			std::lock_guard<std::mutex> lk(outM_);
+			std::lock_guard<std::mutex> inLock(inM_);
+			if (epoch != epoch_)
+				continue;
+			std::lock_guard<std::mutex> outLock(outM_);
 			latest_ = std::move(result);
 			seq_++;
 			lastPublishMs_.store(nowMs());

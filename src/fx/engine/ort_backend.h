@@ -2,6 +2,8 @@
 
 #include <onnxruntime_cxx_api.h>
 
+#include <atomic>
+
 #include <string>
 #include <vector>
 
@@ -23,6 +25,27 @@ Ort::Env &sharedEnv();
 
 namespace fx {
 
+enum class OrtExecutionPolicy { AllowCpuFallback, RequireCuda };
+enum class OrtBackend { Cpu, Cuda, Failed };
+enum class OrtRunFailureAction { Rethrow, RetryCpu };
+
+/* Atomic status for one inference worker and cross-thread UI reads. This
+ * does not make OrtModel::run safe for concurrent inference calls. */
+class OrtBackendState {
+public:
+	explicit OrtBackendState(OrtExecutionPolicy policy) noexcept;
+
+	OrtBackend backend() const noexcept;
+	void setBackend(OrtBackend backend) noexcept;
+	OrtRunFailureAction onRunFailure(OrtErrorCode code) noexcept;
+	void markCpuFallbackReady() noexcept;
+	void markCpuFallbackFailed() noexcept;
+
+private:
+	OrtExecutionPolicy policy_;
+	std::atomic<OrtBackend> backend_{OrtBackend::Cpu};
+};
+
 /* Wrapper around an ONNX Runtime session with dynamic IO discovery.
  * Supports multi-input multi-output models (RVM: 6 in / 6 out);
  * single-IO models use the convenience accessors.
@@ -34,13 +57,11 @@ public:
 		std::vector<int64_t> shape;
 	};
 
-	/* tryCuda: when true AND the classic CUDA append symbol resolves
-	 * (full GPU ORT build installed; see EpProbe), the session is
-	 * attempted with the CUDA execution provider (device 0); ANY
-	 * failure (append or CUDA init) silently falls back to a plain
-	 * CPU session. usesCuda() reports which happened. */
-	explicit OrtModel(const std::string &modelPath, int intraOpThreads = 2,
-			  bool tryCuda = false);
+	/* tryCuda requests the CUDA provider when its classic append symbol is
+	 * available. The default policy preserves provider-failure CPU fallback;
+	 * RequireCuda rejects unavailable or failed CUDA execution instead. */
+	explicit OrtModel(const std::string &modelPath, int intraOpThreads = 2, bool tryCuda = false,
+			  OrtExecutionPolicy policy = OrtExecutionPolicy::AllowCpuFallback);
 
 	size_t inputCount() const { return inputs_.size(); }
 	size_t outputCount() const { return outputs_.size(); }
@@ -51,8 +72,9 @@ public:
 	const TensorDesc &input() const { return inputs_.at(0); }
 	const TensorDesc &output() const { return outputs_.at(0); }
 
+	OrtBackend backend() const noexcept { return backendState_.backend(); }
 	/* True when this session runs on the CUDA execution provider. */
-	bool usesCuda() const { return cuda_; }
+	bool usesCuda() const noexcept { return backend() == OrtBackend::Cuda; }
 
 	/* Single-IO run (existing behavior). */
 	std::vector<float> run(const std::vector<float> &inputData);
@@ -74,15 +96,14 @@ private:
 	runImpl(const std::vector<std::vector<float>> &inputData,
 		const std::vector<std::vector<int64_t>> *overrides);
 	/* Runs the session via IoBinding (outputs bound to CPU memory, so
-	 * device tensors are copied back by ORT); on a CUDA session's
-	 * run-time failure, degrades permanently to a fresh CPU session
-	 * and retries once. */
+	 * device tensors are copied back by ORT). Policy decides whether an
+	 * eligible CUDA provider failure retries once on a fresh CPU session. */
 	std::vector<Ort::Value> tryRun(std::vector<Ort::Value> &inTensors,
 				       std::vector<const char *> &inNames,
 				       std::vector<const char *> &outNames,
 				       Ort::MemoryInfo &cpuMem);
+	OrtBackendState backendState_;
 	Ort::Session session_;
-	bool cuda_ = false;
 	std::string modelPath_;
 	int intraOpThreads_ = 2;
 	std::vector<TensorDesc> inputs_;

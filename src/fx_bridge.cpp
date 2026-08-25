@@ -14,13 +14,16 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <sys/stat.h>
 #include <vector>
@@ -43,6 +46,36 @@ int64_t nowMs()
 	return std::chrono::duration_cast<std::chrono::milliseconds>(
 		       std::chrono::steady_clock::now().time_since_epoch())
 		.count();
+}
+
+bool checkedSizeProduct(size_t a, size_t b, size_t &product)
+{
+	if (a != 0 && b > std::numeric_limits<size_t>::max() / a)
+		return false;
+	product = a * b;
+	return true;
+}
+
+bool validMaskPayload(const fx::Mask &mask)
+{
+	if (mask.width <= 0 || mask.height <= 0)
+		return false;
+	size_t pixels = 0;
+	if (!checkedSizeProduct((size_t)mask.width, (size_t)mask.height, pixels) || mask.px.size() != pixels)
+		return false;
+	for (float v : mask.px)
+		if (!std::isfinite(v))
+			return false;
+	return true;
+}
+
+bool validFramePayload(const fx::Frame &frame)
+{
+	if (frame.width <= 0 || frame.height <= 0)
+		return false;
+	size_t pixels = 0, bytes = 0;
+	return checkedSizeProduct((size_t)frame.width, (size_t)frame.height, pixels) &&
+	       checkedSizeProduct(pixels, 4, bytes) && frame.bgra.size() == bytes;
 }
 
 bool fileExists(const std::string &p)
@@ -135,18 +168,32 @@ struct cam_fx {
 
 	int64_t fpsWinStart = 0;
 	uint64_t fpsCount = 0;
-	uint64_t fpsLast = 0;
+	uint64_t seenStatsSeq = 0;
+	std::atomic<uint64_t> fpsLastAtomic{0};
+	std::atomic<bool> hasMaskEver{false};
 
-	/* Face swap. swapM serializes UI-thread setSource/params against
-	 * the worker thread's swapPipeline->process() (captured by the
-	 * processor lambda as a shared_ptr so it outlives the bridge). */
+	/* Serializes complete face-swap enable/source control transactions. It is
+	 * bridge-owned and deliberately never captured by a worker processor. */
+	std::mutex controlM;
+	/* Face swap. swapM guards swapPipeline, swapParams, and pendingLatent,
+	 * and serializes their UI-thread updates against worker processing. The
+	 * processor captures a shared_ptr so a retired pipeline survives a call. */
 	std::shared_ptr<fx::FaceSwapPipeline> swapPipeline;
 	std::shared_ptr<std::mutex> swapM = std::make_shared<std::mutex>();
+	/* Invalidates dequeued swap lambdas across rapid off/on (the ABA case).
+	 * Shared lifetime is required because a Worker copy can outlive cam_fx. */
+	std::shared_ptr<std::atomic<uint64_t>> swapGeneration = std::make_shared<std::atomic<uint64_t>>(0);
+	/* Terminal CUDA failure notification for the render thread. Shared lifetime
+	 * is required because a dequeued worker processor can outlive cam_fx. */
+	std::shared_ptr<std::atomic<bool>> faceswapFailed = std::make_shared<std::atomic<bool>>(false);
 	std::unique_ptr<fx::FaceEmbedder> embedder; // lazy, cached
 	std::unique_ptr<fx::YuNet> embedDetector;   // lazy, cached
 	fx::FaceSwapParams swapParams;
 	std::vector<float> pendingLatent; // source set before pipeline built
-	bool faceswapEnabled = false;
+	/* Internal control state selects the processor during installation; ready is
+	 * published only after that processor is successfully installed. */
+	std::atomic<bool> faceswapEnabled{false};
+	std::atomic<bool> faceswapReady{false};
 	/* Background mode != off, mirrored for the worker's swap-then-seg
 	 * processor (shared_ptr like swapM: the capturing lambda must
 	 * outlive the bridge). When false the fs processor skips the
@@ -249,6 +296,17 @@ std::string yunetBundledPath()
 	return out;
 }
 
+/* Requires controlM and no swapM ownership. The lock order is controlM ->
+ * swapM -> Worker internals for every source clear/replacement transaction. */
+void clearFaceswapSourceLocked(cam_fx *fx)
+{
+	std::lock_guard<std::mutex> lk(*fx->swapM);
+	fx->pendingLatent.clear();
+	if (fx->swapPipeline)
+		fx->swapPipeline->setSourceEmbedding({});
+	fx->worker->invalidate();
+}
+
 /* Installs the worker processor matching the current state: swap-then-
  * segment when face swap is enabled and built, segment-only otherwise.
  * Pipelines (and the swap mutex) are captured by shared_ptr so a
@@ -258,27 +316,51 @@ void installProcessor(cam_fx *fx)
 	if (!fx->worker || !fx->pipeline)
 		return;
 	std::shared_ptr<fx::SegmentationPipeline> seg = fx->pipeline;
-	if (fx->faceswapEnabled && fx->swapPipeline) {
-		std::shared_ptr<fx::FaceSwapPipeline> swap = fx->swapPipeline;
-		std::shared_ptr<std::mutex> m = fx->swapM;
+	std::shared_ptr<std::mutex> m = fx->swapM;
+	std::shared_ptr<std::atomic<uint64_t>> generation = fx->swapGeneration;
+	std::shared_ptr<fx::FaceSwapPipeline> swap;
+	uint64_t capturedGeneration = 0;
+	if (fx->faceswapEnabled.load(std::memory_order_acquire)) {
+		std::lock_guard<std::mutex> lk(*m);
+		capturedGeneration = generation->load(std::memory_order_acquire);
+		if (fx->faceswapEnabled.load(std::memory_order_acquire))
+			swap = fx->swapPipeline;
+	}
+	if (swap) {
 		std::shared_ptr<std::atomic<bool>> bg = fx->bgActive;
+		std::shared_ptr<std::atomic<bool>> failed = fx->faceswapFailed;
 		fx->worker->setProcessor(
-			[seg, swap, m, bg](const fx::Frame &frame) {
+			[seg, swap, m, bg, generation, failed, capturedGeneration](const fx::Frame &frame) {
+				if (frame.bypassFaceSwap) {
+					fx::WorkerResult r;
+					r.mask = seg->process(frame);
+					return r;
+				}
 				fx::Frame work = frame;
+				bool aiModified = false;
 				{
 					std::lock_guard<std::mutex> lk(*m);
-					swap->process(work);
+					if (generation->load(std::memory_order_acquire) != capturedGeneration)
+						throw std::runtime_error("fx: stale face-swap processor");
+					try {
+						aiModified = swap->process(work);
+					} catch (...) {
+						if (swap->hasFailedBackend())
+							failed->store(true, std::memory_order_release);
+						throw;
+					}
 				}
 				fx::WorkerResult r;
 				/* The mask only feeds the background
 				 * composite — skip the segmentation run
 				 * (2-6ms/frame) when background is off; the
-				 * fs-only composite draws the swapped frame
+				 * fs-only composite draws the full-route frame
 				 * directly and tolerates the null mask. */
 				if (bg->load(std::memory_order_relaxed))
 					r.mask = seg->process(work);
 				r.frame = std::make_shared<const fx::Frame>(
 					std::move(work));
+				r.aiModified = aiModified;
 				return r;
 			});
 	} else {
@@ -477,12 +559,12 @@ void pumpFaceswapDownload(cam_fx *fx)
 
 /* Packs the (possibly padded) BGRA rows into an fx::Frame and hands it
  * to the worker. Shared by both submit entry points. */
-void submitFrame(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
-		 int linesize)
+void submitFrame(cam_fx_t *fx, const uint8_t *bgra, int w, int h, int linesize, bool bypassFaceSwap)
 {
 	auto frame = std::make_shared<fx::Frame>();
 	frame->width = w;
 	frame->height = h;
+	frame->bypassFaceSwap = bypassFaceSwap;
 	frame->bgra.resize((size_t)w * h * 4);
 	for (int y = 0; y < h; y++)
 		std::memcpy(frame->bgra.data() + (size_t)y * w * 4,
@@ -532,57 +614,138 @@ void cam_fx_destroy(cam_fx_t *fx)
 void cam_fx_submit(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
 		   int linesize)
 {
-	submitFrame(fx, bgra, w, h, linesize);
+	submitFrame(fx, bgra, w, h, linesize, true);
 }
 
 void cam_fx_submit_full(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
 			int linesize)
 {
-	submitFrame(fx, bgra, w, h, linesize);
+	submitFrame(fx, bgra, w, h, linesize, false);
 }
 
-int cam_fx_try_get_mask(cam_fx_t *fx, const uint8_t **px, int *w, int *h,
-			uint64_t *seq)
+int cam_fx_try_get_result(cam_fx_t *fx, const uint8_t **mask, int *mask_w, int *mask_h, const uint8_t **frame_bgra,
+			  int *frame_w, int *frame_h, uint64_t *seq)
 {
-	uint64_t s = 0;
-	auto m = fx->worker->tryGetLatestMask(s);
-	if (!m)
+	if (mask)
+		*mask = nullptr;
+	if (mask_w)
+		*mask_w = 0;
+	if (mask_h)
+		*mask_h = 0;
+	if (frame_bgra)
+		*frame_bgra = nullptr;
+	if (frame_w)
+		*frame_w = 0;
+	if (frame_h)
+		*frame_h = 0;
+	if (seq)
+		*seq = 0;
+	if (!fx || !fx->worker || !mask || !mask_w || !mask_h || !frame_bgra || !frame_w || !frame_h || !seq)
 		return 0;
-	if (s != fx->seenSeq) {
-		fx->u8.resize(m->px.size());
-		for (size_t i = 0; i < m->px.size(); i++) {
-			float v = m->px[i];
-			v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
-			fx->u8[i] = (uint8_t)(v * 255.0f + 0.5f);
+	try {
+		uint64_t s = 0;
+		fx::WorkerResult result = fx->worker->tryGetLatest(s);
+		if (!result.mask && !result.frame)
+			return 0;
+
+		int flags = 0;
+		if (result.mask) {
+			if (!validMaskPayload(*result.mask)) {
+				fx->u8.clear();
+				fx->seenSeq = s;
+			} else {
+				if (s != fx->seenSeq) {
+					fx->u8.resize(result.mask->px.size());
+					for (size_t i = 0; i < result.mask->px.size(); i++) {
+						float v = result.mask->px[i];
+						v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+						fx->u8[i] = (uint8_t)(v * 255.0f + 0.5f);
+					}
+					fx->seenSeq = s;
+				}
+				if (!fx->loggedFirstMask) {
+					fx->loggedFirstMask = true;
+					static const char *names[] = {"none", "lite", "standard", "quality"};
+					blog(LOG_INFO, "obs-cam-effects: first mask published (%dx%d, tier=%s)",
+					     result.mask->width, result.mask->height,
+					     fx->tierInEffect >= 0 && fx->tierInEffect <= 3 ? names[fx->tierInEffect]
+											    : "?");
+				}
+				fx->hasMaskEver.store(true, std::memory_order_relaxed);
+				flags |= CAM_FX_RESULT_MASK;
+			}
 		}
-		fx->seenSeq = s;
-		/* Rolling fps: masks seen per completed 1s window. */
-		int64_t now = nowMs();
-		if (fx->fpsWinStart == 0)
-			fx->fpsWinStart = now;
-		fx->fpsCount++;
-		int64_t elapsed = now - fx->fpsWinStart;
-		if (elapsed >= 1000) {
-			fx->fpsLast = fx->fpsCount * 1000 / (uint64_t)elapsed;
-			fx->fpsCount = 0;
-			fx->fpsWinStart = now;
+		if (result.frame) {
+			if (!validFramePayload(*result.frame)) {
+				fx->u8frame.clear();
+				fx->frameW = 0;
+				fx->frameH = 0;
+				fx->seenFrameSeq = s;
+			} else {
+				if (s != fx->seenFrameSeq) {
+					fx->u8frame = result.frame->bgra;
+					fx->frameW = result.frame->width;
+					fx->frameH = result.frame->height;
+					fx->seenFrameSeq = s;
+				}
+				flags |= CAM_FX_RESULT_FRAME;
+				if (result.aiModified)
+					flags |= CAM_FX_RESULT_AI;
+			}
 		}
+		if (flags == 0)
+			return 0;
+
+		if (s != fx->seenStatsSeq) {
+			fx->seenStatsSeq = s;
+			int64_t now = nowMs();
+			if (fx->fpsWinStart == 0)
+				fx->fpsWinStart = now;
+			fx->fpsCount++;
+			int64_t elapsed = now - fx->fpsWinStart;
+			if (elapsed >= 1000) {
+				fx->fpsLastAtomic.store(fx->fpsCount * 1000 / (uint64_t)elapsed,
+							std::memory_order_relaxed);
+				fx->fpsCount = 0;
+				fx->fpsWinStart = now;
+			}
+		}
+		if (flags & CAM_FX_RESULT_MASK) {
+			*mask = fx->u8.data();
+			*mask_w = result.mask->width;
+			*mask_h = result.mask->height;
+		}
+		if (flags & CAM_FX_RESULT_FRAME) {
+			*frame_bgra = fx->u8frame.data();
+			*frame_w = fx->frameW;
+			*frame_h = fx->frameH;
+		}
+		*seq = s;
+		return flags;
+	} catch (...) {
+		return 0;
 	}
-	if (!fx->loggedFirstMask) {
-		fx->loggedFirstMask = true;
-		static const char *names[] = {"none", "lite", "standard",
-					      "quality"};
-		blog(LOG_INFO,
-		     "obs-cam-effects: first mask published (%dx%d, tier=%s)",
-		     m->width, m->height,
-		     fx->tierInEffect >= 0 && fx->tierInEffect <= 3
-			     ? names[fx->tierInEffect]
-			     : "?");
+}
+
+int cam_fx_try_get_mask(cam_fx_t *fx, const uint8_t **px, int *w, int *h, uint64_t *seq)
+{
+	if (px)
+		*px = nullptr;
+	if (w)
+		*w = 0;
+	if (h)
+		*h = 0;
+	if (seq)
+		*seq = 0;
+	if (!px || !w || !h || !seq)
+		return 0;
+	const uint8_t *frame = nullptr;
+	int frameW = 0, frameH = 0;
+	int flags = cam_fx_try_get_result(fx, px, w, h, &frame, &frameW, &frameH, seq);
+	if (!(flags & CAM_FX_RESULT_MASK)) {
+		*seq = 0;
+		return 0;
 	}
-	*px = fx->u8.data();
-	*w = m->width;
-	*h = m->height;
-	*seq = s;
 	return 1;
 }
 
@@ -595,8 +758,7 @@ int cam_fx_has_mask(cam_fx_t *fx)
 {
 	if (!fx)
 		return 0;
-	uint64_t s = 0;
-	return fx->worker->tryGetLatestMask(s) ? 1 : 0;
+	return fx->hasMaskEver.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
 void cam_fx_set_tier(cam_fx_t *fx, int tier)
@@ -733,7 +895,7 @@ int cam_fx_notice(cam_fx_t *fx, const char *id, char *buf, int buf_len)
 
 uint64_t cam_fx_fps(cam_fx_t *fx)
 {
-	return fx->fpsLast;
+	return fx ? fx->fpsLastAtomic.load(std::memory_order_relaxed) : 0;
 }
 
 int cam_fx_backend(cam_fx_t *fx, char *buf, int buf_len)
@@ -752,6 +914,52 @@ void cam_fx_set_background_active(cam_fx_t *fx, int active)
 	if (!fx)
 		return;
 	fx->bgActive->store(active != 0, std::memory_order_relaxed);
+}
+
+int cam_fx_faceswap_backend(cam_fx_t *fx, char *buf, int buf_len)
+{
+	if (!fx)
+		return -1;
+	const char *name = "disabled";
+	if (fx->faceswapReady.load(std::memory_order_acquire)) {
+		name = "not loaded";
+		std::shared_ptr<fx::FaceSwapPipeline> swap;
+		{
+			std::lock_guard<std::mutex> lk(*fx->swapM);
+			swap = fx->swapPipeline;
+		}
+		if (fx->faceswapFailed->load(std::memory_order_acquire) || (swap && swap->hasFailedBackend())) {
+			name = "failed";
+		} else if (swap) {
+			switch (swap->swapBackend()) {
+			case fx::OrtBackend::Cuda:
+				name = "CUDA";
+				break;
+			case fx::OrtBackend::Failed:
+				name = "failed";
+				break;
+			case fx::OrtBackend::Cpu:
+				break;
+			}
+		}
+	}
+	if (buf && buf_len > 0)
+		snprintf(buf, (size_t)buf_len, "%s", name);
+	return 0;
+}
+
+int cam_fx_faceswap_enabled(cam_fx_t *fx)
+{
+	if (!fx)
+		return 0;
+	return fx->faceswapReady.load(std::memory_order_acquire) ? 1 : 0;
+}
+
+int cam_fx_faceswap_failed(cam_fx_t *fx)
+{
+	if (!fx)
+		return 0;
+	return fx->faceswapFailed->load(std::memory_order_acquire) ? 1 : 0;
 }
 
 int cam_fx_faceswap_available(cam_fx_t *fx)
@@ -803,37 +1011,71 @@ void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled)
 	if (!fx || !fx->worker)
 		return;
 	try {
-		if ((enabled != 0) == fx->faceswapEnabled &&
-		    (!enabled || fx->swapPipeline))
-			return; // idempotent: state unchanged
-		if (enabled) {
-			if (!fx->swapPipeline) {
-				if (cam_fx_faceswap_available(fx) != 1)
-					return;
-				std::string yunet = yunetBundledPath();
-				if (yunet.empty())
-					return;
-				auto swap =
-					std::make_shared<fx::FaceSwapPipeline>(
-						yunet, inswapperCachePath(fx),
-						arcfaceCachePath(fx),
-						fx->threads,
-						/*tryCuda=*/true);
+		std::lock_guard<std::mutex> controlLock(fx->controlM);
+		const bool wasEnabled = fx->faceswapEnabled.load(std::memory_order_acquire);
+		if (!enabled) {
+			fx->faceswapReady.store(false, std::memory_order_release);
+			if (!wasEnabled)
+				return; // idempotent: already inactive
+			fx->faceswapEnabled.store(false, std::memory_order_release);
+			fx->swapGeneration->fetch_add(1, std::memory_order_acq_rel);
+			installProcessor(fx);
+			{
+				std::lock_guard<std::mutex> lk(*fx->swapM);
+				if (fx->swapPipeline && fx->swapPipeline->hasFailedBackend())
+					fx->swapPipeline.reset();
+				else if (fx->swapPipeline)
+					fx->swapPipeline->resetTracking();
+			}
+			fx->faceswapFailed->store(false, std::memory_order_release);
+			return;
+		}
+		if (wasEnabled)
+			return; // idempotent: already active
+		fx->faceswapReady.store(false, std::memory_order_release);
+		bool hasPipeline = false;
+		{
+			std::lock_guard<std::mutex> lk(*fx->swapM);
+			if (fx->swapPipeline && fx->swapPipeline->hasFailedBackend())
+				fx->swapPipeline.reset();
+			hasPipeline = fx->swapPipeline != nullptr;
+		}
+		if (!hasPipeline) {
+			if (cam_fx_faceswap_available(fx) != 1)
+				return;
+			std::string yunet = yunetBundledPath();
+			if (yunet.empty())
+				return;
+			auto swap = std::make_shared<fx::FaceSwapPipeline>(yunet, inswapperCachePath(fx), fx->threads,
+									   /*tryCuda=*/true,
+									   fx::OrtExecutionPolicy::RequireCuda);
+			{
+				std::lock_guard<std::mutex> lk(*fx->swapM);
 				swap->setParams(fx->swapParams);
-				/* Missing source is fine: process() no-
-				 * swaps until one is set (hasSource). */
+				/* Missing source is fine: process() no-swaps until one is
+				 * set (hasSource). */
 				if (!fx->pendingLatent.empty())
 					swap->setSourceEmbedding(
 						fx->pendingLatent);
 				fx->swapPipeline = std::move(swap);
-				blog(LOG_INFO,
-				     "obs-cam-effects: face swap pipeline built");
 			}
-			fx->faceswapEnabled = true;
-		} else {
-			fx->faceswapEnabled = false;
+			blog(LOG_INFO, "obs-cam-effects: face swap pipeline built");
 		}
-		installProcessor(fx);
+		fx->faceswapFailed->store(false, std::memory_order_release);
+		fx->faceswapEnabled.store(true, std::memory_order_release);
+		try {
+			installProcessor(fx);
+			fx->faceswapReady.store(true, std::memory_order_release);
+		} catch (...) {
+			fx->faceswapReady.store(false, std::memory_order_release);
+			fx->faceswapEnabled.store(false, std::memory_order_release);
+			fx->swapGeneration->fetch_add(1, std::memory_order_acq_rel);
+			try {
+				installProcessor(fx);
+			} catch (...) {
+			}
+			throw;
+		}
 	} catch (const std::exception &e) {
 		blog(LOG_WARNING,
 		     "obs-cam-effects: face swap enable failed: %s", e.what());
@@ -844,60 +1086,69 @@ void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled)
 
 int cam_fx_faceswap_set_source(cam_fx_t *fx, const char *image_path)
 {
-	if (!fx || !image_path || image_path[0] == '\0')
+	if (!fx || !image_path)
 		return -1;
 	try {
-		if (!faceswapModelsPresent(fx))
-			return -1;
-		std::string yunet = yunetBundledPath();
-		if (yunet.empty())
-			return -1;
-		if (!fx->embedder)
-			fx->embedder = std::make_unique<fx::FaceEmbedder>(
-				arcfaceCachePath(fx), inswapperCachePath(fx),
-				fx->threads);
-		if (!fx->embedDetector)
-			fx->embedDetector =
-				std::make_unique<fx::YuNet>(yunet, fx->threads);
-		std::vector<float> latent =
-			fx->embedder->embedFromImageFile(image_path,
-							 *fx->embedDetector);
-		if (latent.empty()) {
-			blog(LOG_WARNING,
-			     "obs-cam-effects: face swap source: no usable face in %s",
-			     image_path);
+		std::lock_guard<std::mutex> controlLock(fx->controlM);
+		clearFaceswapSourceLocked(fx);
+		if (image_path[0] == '\0') {
+			blog(LOG_INFO, "obs-cam-effects: face swap source cleared");
+			return 0;
+		}
+		try {
+			if (!faceswapModelsPresent(fx)) {
+				blog(LOG_WARNING, "obs-cam-effects: face swap source failed");
+				return -1;
+			}
+			std::string yunet = yunetBundledPath();
+			if (yunet.empty()) {
+				blog(LOG_WARNING, "obs-cam-effects: face swap source failed");
+				return -1;
+			}
+			if (!fx->embedder)
+				fx->embedder = std::make_unique<fx::FaceEmbedder>(arcfaceCachePath(fx),
+										  inswapperCachePath(fx), fx->threads);
+			if (!fx->embedDetector)
+				fx->embedDetector = std::make_unique<fx::YuNet>(yunet, fx->threads);
+			std::vector<float> latent = fx->embedder->embedFromImageFile(image_path, *fx->embedDetector);
+			if (latent.empty()) {
+				blog(LOG_WARNING, "obs-cam-effects: face swap source has no usable face");
+				return -1;
+			}
+			{
+				std::lock_guard<std::mutex> lk(*fx->swapM);
+				fx->pendingLatent = latent;
+				if (fx->swapPipeline)
+					fx->swapPipeline->setSourceEmbedding(std::move(latent));
+				fx->worker->invalidate();
+			}
+		} catch (...) {
+			clearFaceswapSourceLocked(fx);
+			blog(LOG_WARNING, "obs-cam-effects: face swap source failed");
 			return -1;
 		}
-		fx->pendingLatent = latent;
-		if (fx->swapPipeline) {
-			std::lock_guard<std::mutex> lk(*fx->swapM);
-			fx->swapPipeline->setSourceEmbedding(std::move(latent));
-		}
-		blog(LOG_INFO, "obs-cam-effects: face swap source set: %s",
-		     image_path);
+		blog(LOG_INFO, "obs-cam-effects: face swap source set");
 		return 0;
-	} catch (const std::exception &e) {
-		blog(LOG_WARNING,
-		     "obs-cam-effects: face swap source failed: %s",
-		     e.what());
-		return -1;
 	} catch (...) {
+		blog(LOG_WARNING, "obs-cam-effects: face swap source failed");
 		return -1;
 	}
 }
 
-void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity,
-				float sharpness, int preserve_mouth)
+void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity, float sharpness, int preserve_mouth,
+				int detect_every_frame)
 {
 	if (!fx)
 		return;
 	try {
-		fx->swapParams.intensity = intensity;
-		fx->swapParams.sharpness = sharpness;
-		fx->swapParams.mouthPreserve = (float)preserve_mouth / 100.0f;
-		if (fx->swapPipeline) {
+		{
 			std::lock_guard<std::mutex> lk(*fx->swapM);
-			fx->swapPipeline->setParams(fx->swapParams);
+			fx->swapParams.intensity = intensity;
+			fx->swapParams.sharpness = sharpness;
+			fx->swapParams.mouthPreserve = (float)preserve_mouth / 100.0f;
+			fx->swapParams.detectEveryN = detect_every_frame ? 1 : 2;
+			if (fx->swapPipeline)
+				fx->swapPipeline->setParams(fx->swapParams);
 		}
 	} catch (...) {
 	}
@@ -906,27 +1157,24 @@ void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity,
 int cam_fx_try_get_frame(cam_fx_t *fx, const uint8_t **bgra, int *w, int *h,
 			 uint64_t *seq)
 {
-	if (!fx || !fx->worker || !bgra || !w || !h || !seq)
+	if (bgra)
+		*bgra = nullptr;
+	if (w)
+		*w = 0;
+	if (h)
+		*h = 0;
+	if (seq)
+		*seq = 0;
+	if (!bgra || !w || !h || !seq)
 		return 0;
-	try {
-		uint64_t s = 0;
-		fx::WorkerResult r = fx->worker->tryGetLatest(s);
-		if (!r.frame)
-			return 0;
-		if (s != fx->seenFrameSeq) {
-			fx->u8frame = r.frame->bgra;
-			fx->frameW = r.frame->width;
-			fx->frameH = r.frame->height;
-			fx->seenFrameSeq = s;
-		}
-		*bgra = fx->u8frame.data();
-		*w = fx->frameW;
-		*h = fx->frameH;
-		*seq = s;
-		return 1;
-	} catch (...) {
+	const uint8_t *mask = nullptr;
+	int maskW = 0, maskH = 0;
+	int flags = cam_fx_try_get_result(fx, &mask, &maskW, &maskH, bgra, w, h, seq);
+	if (!(flags & CAM_FX_RESULT_FRAME)) {
+		*seq = 0;
 		return 0;
 	}
+	return 1;
 }
 
 int cam_fx_start_faceswap_download(cam_fx_t *fx)

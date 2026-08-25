@@ -10,6 +10,8 @@ struct Frame {
 	int width = 0;
 	int height = 0;
 	std::vector<uint8_t> bgra;
+	/* Worker routing metadata only; the packed pixel payload is unchanged. */
+	bool bypassFaceSwap = false;
 };
 
 /* A single-channel person mask, values in [0,1]. */

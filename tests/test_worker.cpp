@@ -116,35 +116,150 @@ TEST(Worker, ProcessorThrowDoesNotCrash)
 	SUCCEED(); // reaching here means no std::terminate
 }
 
-TEST(Worker, SetProcessorSwapsSafely)
+TEST(Worker, SetProcessorDropsInFlightResultBeforePublishingReplacement)
 {
-	std::atomic<int> which{0};
-	auto mk = [](int id) {
-		return [id](const fx::Frame &) {
-			fx::WorkerResult r;
-			auto m = std::make_shared<fx::Mask>();
-			m->width = 1;
-			m->height = 1;
-			m->px = {(float)id};
-			r.mask = m;
-			return r;
-		};
+	std::latch firstProcessorACallEntered(1);
+	std::latch releaseFirstProcessorACall(1);
+	std::latch secondProcessorACallEntered(1);
+	std::latch releaseSecondProcessorACall(1);
+	std::latch processorBEntered(1);
+	std::latch releaseProcessorB(1);
+	std::atomic<int> processorACalls{0};
+	auto processorA = [&](const fx::Frame &) {
+		const int call = processorACalls.fetch_add(1) + 1;
+		if (call == 1) {
+			firstProcessorACallEntered.count_down();
+			releaseFirstProcessorACall.wait();
+		} else if (call == 2) {
+			secondProcessorACallEntered.count_down();
+			releaseSecondProcessorACall.wait();
+		}
+		fx::WorkerResult r;
+		auto m = std::make_shared<fx::Mask>();
+		m->width = 1;
+		m->height = 1;
+		m->px = {(float)call};
+		r.mask = m;
+		return r;
 	};
-	fx::Worker w(mk(1));
+	auto processorB = [&](const fx::Frame &) {
+		processorBEntered.count_down();
+		releaseProcessorB.wait();
+		fx::WorkerResult r;
+		auto m = std::make_shared<fx::Mask>();
+		m->width = 1;
+		m->height = 1;
+		m->px = {2.0f};
+		r.mask = m;
+		return r;
+	};
+	fx::Worker w(processorA);
 	w.start();
-	std::this_thread::sleep_for(10ms);
-	w.setProcessor(mk(2));
-	std::this_thread::sleep_for(10ms);
 	w.submit(makeFrame(1));
+	firstProcessorACallEntered.wait();
+	w.submit(makeFrame(2));
+	releaseFirstProcessorACall.count_down();
+	secondProcessorACallEntered.wait();
+
 	uint64_t seq = 0;
-	std::shared_ptr<const fx::Mask> m;
-	for (int i = 0; i < 100 && seq == 0; i++) {
-		std::this_thread::sleep_for(5ms);
-		m = w.tryGetLatestMask(seq);
+	auto m = w.tryGetLatestMask(seq);
+	EXPECT_EQ(seq, 1u);
+	EXPECT_NE(m, nullptr);
+	if (m) {
+		EXPECT_FLOAT_EQ(m->px[0], 1.0f);
 	}
+	EXPECT_TRUE(w.isFresh(5000));
+
+	w.setProcessor(processorB);
+	m = w.tryGetLatestMask(seq);
+	EXPECT_EQ(seq, 1u);
+	EXPECT_EQ(m, nullptr);
+	EXPECT_FALSE(w.isFresh(5000));
+
+	w.submit(makeFrame(3));
+	releaseSecondProcessorACall.count_down();
+	processorBEntered.wait();
+	m = w.tryGetLatestMask(seq);
+	EXPECT_EQ(seq, 1u);
+	EXPECT_EQ(m, nullptr);
+	EXPECT_FALSE(w.isFresh(5000));
+
+	releaseProcessorB.count_down();
 	w.stop();
-	ASSERT_EQ(seq, 1u);
+	m = w.tryGetLatestMask(seq);
+	ASSERT_EQ(seq, 2u);
+	ASSERT_NE(m, nullptr);
 	ASSERT_FLOAT_EQ(m->px[0], 2.0f);
+}
+
+TEST(Worker, InvalidateClearsLatestAndDropsInFlightResult)
+{
+	std::latch firstCallEntered(1);
+	std::latch releaseFirstCall(1);
+	std::latch secondCallEntered(1);
+	std::latch releaseSecondCall(1);
+	std::latch thirdCallEntered(1);
+	std::latch releaseThirdCall(1);
+	std::atomic<int> calls{0};
+	auto processor = [&](const fx::Frame &frame) {
+		const int call = calls.fetch_add(1) + 1;
+		if (call == 1) {
+			firstCallEntered.count_down();
+			releaseFirstCall.wait();
+		} else if (call == 2) {
+			secondCallEntered.count_down();
+			releaseSecondCall.wait();
+		} else if (call == 3) {
+			thirdCallEntered.count_down();
+			releaseThirdCall.wait();
+		}
+		fx::WorkerResult r;
+		auto m = std::make_shared<fx::Mask>();
+		m->width = 1;
+		m->height = 1;
+		m->px = {(float)frame.bgra[0]};
+		r.mask = m;
+		return r;
+	};
+
+	fx::Worker w(processor);
+	w.start();
+	w.submit(makeFrame(10));
+	firstCallEntered.wait();
+	w.submit(makeFrame(20));
+	releaseFirstCall.count_down();
+	secondCallEntered.wait();
+
+	uint64_t seq = 0;
+	auto m = w.tryGetLatestMask(seq);
+	EXPECT_EQ(seq, 1u);
+	EXPECT_NE(m, nullptr);
+	if (m) {
+		EXPECT_FLOAT_EQ(m->px[0], 10.0f);
+	}
+	EXPECT_TRUE(w.isFresh(5000));
+
+	w.invalidate();
+	m = w.tryGetLatestMask(seq);
+	EXPECT_EQ(seq, 1u);
+	EXPECT_EQ(m, nullptr);
+	EXPECT_FALSE(w.isFresh(5000));
+
+	w.submit(makeFrame(30));
+	releaseSecondCall.count_down();
+	thirdCallEntered.wait();
+	m = w.tryGetLatestMask(seq);
+	EXPECT_EQ(seq, 1u);
+	EXPECT_EQ(m, nullptr);
+	EXPECT_FALSE(w.isFresh(5000));
+
+	releaseThirdCall.count_down();
+	w.stop();
+	m = w.tryGetLatestMask(seq);
+	ASSERT_EQ(seq, 2u);
+	ASSERT_NE(m, nullptr);
+	EXPECT_FLOAT_EQ(m->px[0], 30.0f);
+	EXPECT_TRUE(w.isFresh(5000));
 }
 
 TEST(Worker, PublishesFrameAndMaskBundle)
@@ -161,6 +276,7 @@ TEST(Worker, PublishesFrameAndMaskBundle)
 		f->height = 2;
 		f->bgra.assign(16, 7);
 		r.frame = f;
+		r.aiModified = true;
 		return r;
 	};
 	fx::Worker w(proc);
@@ -180,6 +296,7 @@ TEST(Worker, PublishesFrameAndMaskBundle)
 	ASSERT_EQ(seq, 1u);
 	ASSERT_TRUE(r.mask != nullptr);
 	ASSERT_TRUE(r.frame != nullptr);
+	ASSERT_TRUE(r.aiModified);
 	ASSERT_EQ(r.frame->width, 2);
 	ASSERT_EQ(r.frame->bgra[0], 7);
 }

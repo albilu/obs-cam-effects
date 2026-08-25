@@ -1,7 +1,8 @@
 #pragma once
 
-#include "fx/models/face_embedder.h"
+#include "fx/engine/ort_backend.h"
 #include "fx/models/yunet.h"
+#include "fx/pipeline/face_tracker.h"
 #include "fx/types.h"
 
 #include <cstdint>
@@ -26,32 +27,33 @@ struct FaceSwapParams {
  * not stamped here. */
 class FaceSwapPipeline {
 public:
-	FaceSwapPipeline(const std::string &yunetPath,
-			 const std::string &inswapperPath,
-			 const std::string &arcfacePath, int threads = 2,
-			 bool tryCuda = false);
+	FaceSwapPipeline(const std::string &yunetPath, const std::string &inswapperPath, int threads = 2,
+			 bool tryCuda = false, OrtExecutionPolicy swapPolicy = OrtExecutionPolicy::AllowCpuFallback);
 
 	void setSourceEmbedding(std::vector<float> latent);
+	void resetTracking();
 	bool hasSource() const { return !sourceLatent_.empty(); }
+	OrtBackend swapBackend() const noexcept { return swapper_.backend(); }
+	bool hasFailedBackend() const noexcept
+	{
+		return detector_.backend() == OrtBackend::Failed || swapper_.backend() == OrtBackend::Failed;
+	}
 	void setParams(const FaceSwapParams &p) { params_ = p; }
 
-	/* Swaps the largest detected face of `frame` in place (BGRA).
+	/* Swaps the largest detected or tracked face of `frame` in place (BGRA).
 	 * Returns true if a swap was applied. */
 	bool process(Frame &frame);
 
 private:
 	YuNet detector_;
 	OrtModel swapper_;
-	FaceEmbedder embedder_;
 	std::vector<float> sourceLatent_;
 	FaceSwapParams params_;
 
-	/* Temporal state */
-	bool havePrevBox_ = false;
-	FaceBox prevBox_{};
-	uint64_t frameCount_ = 0;   // detection decimation counter
+	FaceTracker tracker_;
 	std::vector<uint8_t> aimg_;       // 128x128x3 aligned crop
 	std::vector<uint8_t> fake128_;    // swap output crop
+	std::vector<uint8_t> mask128_;    // fixed paste-back mask
 	std::vector<uint8_t> origFrame_;  // for mouth restore
 };
 

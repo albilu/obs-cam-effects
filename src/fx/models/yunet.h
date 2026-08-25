@@ -25,6 +25,7 @@ public:
 	 * internally; coordinates mapped back to frame pixels). Returns
 	 * boxes sorted by score desc, NMS 0.3 applied. */
 	std::vector<FaceBox> detect(const Frame &frame, float scoreThresh = 0.6f);
+	OrtBackend backend() const noexcept { return model_.backend(); }
 
 private:
 	OrtModel model_;

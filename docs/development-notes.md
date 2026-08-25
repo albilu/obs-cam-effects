@@ -118,16 +118,13 @@ merge against this base.
   - Rvm test depends on a manually staged model file in
     build_x86_64/models (not CMake-downloaded) — re-stage after wiping
     the build dir.
-  - fpsLast cross-thread read is benign-on-x86 but non-atomic.
-  - blur_strength plain int cross-thread (carried from Plan 2 notes).
+	- blur_strength plain int cross-thread (carried from Plan 2 notes).
   - Downloader cancel is only checked after curl exits (bounded to ≤30s
     stall by --speed-time/--limit + 30min cap); true kill-on-cancel
     (fork/exec + kill) is a follow-up.
   - CUDA does not auto-activate when the provider download completes
     in-session — requires a tier toggle or OBS restart (probe is
     once-latched by design).
-  - OrtModel::cuda_ flag: worker-thread write / UI-thread read (benign
-    on x86, same class as fpsLast).
   - Spec drift to reconcile at next spec revision: §7.1 Auto rule says
     "usable GPU EP" but shipped Auto = Quality when RVM exists regardless
     of GPU (CPU-viable, deliberate); §7.3 says HuggingFace but shipped
@@ -185,12 +182,18 @@ merge against this base.
   fp32 file is not re-downloaded. ArcFace w600k_r50 provides the source
   embedding (once per source image, not a per-frame cost). Download
   chain: inswapper_128_fp16 -> w600k_r50 (~450 MB total).
-- Detection decimation: YuNet runs every 2nd frame by default
-  (FaceSwapParams.detectEveryN = 2; <=1 restores detect-every-frame).
-  Skipped frames reuse the EMA-smoothed previous box; a no-face detect
-  frame invalidates it (next frame forces a re-detect). Align/swap/
-  paste-back still run EVERY frame — only detection is decimated.
-  Internal default, no UI setting (YAGNI).
+- Detection decimation and recovery: the balanced default is
+  `FaceSwapParams.detectEveryN = 2`; the `High-quality tracking (detect every
+  frame)` checkbox maps it to 1. Skipped frames reuse the EMA-smoothed geometry.
+  Geometry survives exactly three consecutive detector misses, with detection
+  forced on every processed frame during recovery; the fourth miss clears it.
+  Align/swap/paste-back still run every frame when geometry is available.
+- Paste-back samples only the transformed crop bounds and makes no full-frame
+  face or mask allocations. Output dimensions remain unchanged, with the
+  existing 1920x1080 input cap still in effect.
+- Production inswapper requires CUDA. A runtime provider failure stops
+  publication into the existing passthrough/freeze behavior instead of falling
+  back to the roughly 0.8 FPS CPU path.
 - Bench (RTX 5070, classic CUDA API, 2026-08-06): inswapper fp16
   9.54 ms (fp32 15.75 ms); e2e fp16 34.47 ms detect-every-frame,
   31.10 ms (32.2 fps) with decimation — see docs/benchmarks.md.

@@ -23,6 +23,7 @@
 #define SETTING_FACE_IMAGE "face_image"
 #define SETTING_SWAP_INTENSITY "swap_intensity"
 #define SETTING_SWAP_SHARPNESS "swap_sharpness"
+#define SETTING_SWAP_DETECT_EVERY_FRAME "swap_detect_every_frame"
 #define SETTING_SWAP_PRESERVE_MOUTH "swap_preserve_mouth"
 #define SETTING_SWAP_WATERMARK "swap_watermark"
 
@@ -80,13 +81,15 @@ struct cam_effects_filter {
 	gs_stagesurf_t *full_surface;   /* base-size BGRA (face swap) */
 	uint32_t full_w;		/* current full staging width */
 	uint32_t full_h;		/* current full staging height */
-	gs_texture_t *frame_tex;	/* latest swapped frame */
+	gs_texture_t *frame_tex;        /* latest full-route frame */
 	uint32_t frame_tex_w;
 	uint32_t frame_tex_h;
 	uint64_t frame_seq;		/* last uploaded swapped-frame seq */
-	bool full_oversize;		/* target exceeds the 1080p cap */
+	atomic_bool full_oversize;      /* target exceeds the 1080p cap */
 	bool full_oversize_logged;	/* cap warning already logged */
-	gs_texrender_t *out_render;     /* frame-size composite + freeze */
+	gs_texrender_t *out_render;     /* committed frame-size composite + freeze */
+	gs_texrender_t *out_work;       /* uncommitted frame-size composite */
+	bool out_has_ai;                /* committed out_render contains AI-modified pixels */
 	gs_texture_t *mask_tex;         /* STAGE_SIZE x STAGE_SIZE R8 */
 	gs_effect_t *effect;            /* mask_composite.effect */
 	gs_texrender_t *blur_a;         /* half-res ping */
@@ -132,6 +135,7 @@ static void cam_effects_destroy_graphics(struct cam_effects_filter *filter)
 	gs_stagesurface_destroy(filter->full_surface);
 	gs_texture_destroy(filter->frame_tex);
 	gs_texrender_destroy(filter->out_render);
+	gs_texrender_destroy(filter->out_work);
 	gs_texrender_destroy(filter->blur_a);
 	gs_texrender_destroy(filter->blur_b);
 	gs_texture_destroy(filter->mask_tex);
@@ -170,12 +174,15 @@ static void *cam_effects_create(obs_data_t *settings, obs_source_t *source)
 	struct cam_effects_filter *filter =
 		bzalloc(sizeof(struct cam_effects_filter));
 	filter->source = source;
+	filter->out_has_ai = false;
+	atomic_init(&filter->full_oversize, false);
 
 	obs_enter_graphics();
 	filter->stage_render = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
 	filter->stage_surface =
 		gs_stagesurface_create(STAGE_SIZE, STAGE_SIZE, GS_BGRA);
 	filter->out_render = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+	filter->out_work = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
 	filter->blur_a = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
 	filter->blur_b = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
 	obs_leave_graphics();
@@ -231,9 +238,11 @@ static void cam_effects_compose_status(struct cam_effects_filter *filter)
 
 	char backend[16] = "CPU";
 	cam_fx_backend(filter->fx, backend, sizeof(backend));
+	char fs_backend[16] = "disabled";
+	cam_fx_faceswap_backend(filter->fx, fs_backend, sizeof(fs_backend));
 
-	/* fps is meaningful only while masks flow: show "warming up…"
-	 * before the first mask and "—" once the stream goes stale. */
+	/* Fresh Worker results show result FPS. Without freshness, preserve
+	 * the existing valid-mask history distinction for warm/stale text. */
 	char fps_text[32];
 	if (cam_fx_is_fresh(filter->fx, 2000))
 		snprintf(fps_text, sizeof(fps_text), "%llu fps",
@@ -272,11 +281,15 @@ static void cam_effects_compose_status(struct cam_effects_filter *filter)
 	} else if (cam_fx_faceswap_available(filter->fx)) {
 		bool face_swap = atomic_load_explicit(&filter->face_swap,
 						      memory_order_relaxed) != 0;
-		snprintf(fs_text, sizeof(fs_text), "Face swap: %s%s",
-			 face_swap ? "on" : "off",
-			 (face_swap && filter->full_oversize)
-				 ? " — source too large, background only"
-				 : "");
+		if (!face_swap)
+			snprintf(fs_text, sizeof(fs_text), "Face swap: off");
+		else if (!cam_fx_faceswap_enabled(filter->fx))
+			snprintf(fs_text, sizeof(fs_text), "Face swap: failed to initialize");
+		else
+			snprintf(fs_text, sizeof(fs_text), "Face swap: on (%s)%s", fs_backend,
+				 atomic_load_explicit(&filter->full_oversize, memory_order_relaxed)
+					 ? " — source too large, background only"
+					 : "");
 	}
 	else {
 		char reason[96] = {0};
@@ -375,6 +388,7 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 		(float)obs_data_get_double(settings, SETTING_SWAP_INTENSITY);
 	float swap_sharpness =
 		(float)obs_data_get_double(settings, SETTING_SWAP_SHARPNESS);
+	bool swap_detect_every_frame = obs_data_get_bool(settings, SETTING_SWAP_DETECT_EVERY_FRAME);
 	int swap_preserve_mouth = (int)obs_data_get_int(settings, SETTING_SWAP_PRESERVE_MOUTH);
 	bool swap_watermark =
 		obs_data_get_bool(settings, SETTING_SWAP_WATERMARK);
@@ -454,7 +468,8 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 		 * embedding only when the path changed (it runs
 		 * detect+ArcFace on this thread); enable last so a
 		 * lazy build picks up params + pending source. */
-		cam_fx_faceswap_set_params(filter->fx, swap_intensity, swap_sharpness, swap_preserve_mouth);
+		cam_fx_faceswap_set_params(filter->fx, swap_intensity, swap_sharpness, swap_preserve_mouth,
+					   swap_detect_every_frame ? 1 : 0);
 		bool src_changed =
 			(filter->face_image_applied == NULL) !=
 				(filter->face_image_path == NULL) ||
@@ -462,17 +477,16 @@ static void cam_effects_update(void *data, obs_data_t *settings)
 			 strcmp(filter->face_image_applied,
 				filter->face_image_path) != 0);
 		if (src_changed) {
-			int rc = 0;
-			if (filter->face_image_path[0] != '\0')
-				rc = cam_fx_faceswap_set_source(
-					filter->fx, filter->face_image_path);
-			/* Latch the applied path only on success, so
-			 * re-selecting the same file retries after a
-			 * failed embed. */
+			int rc = cam_fx_faceswap_set_source(filter->fx, filter->face_image_path);
+			/* A failed replacement clears the bridge source. Invalidate
+			 * the cache so selecting the previous path restores it. */
 			if (rc == 0) {
 				bfree(filter->face_image_applied);
 				filter->face_image_applied =
 					bstrdup(filter->face_image_path);
+			} else {
+				bfree(filter->face_image_applied);
+				filter->face_image_applied = NULL;
 			}
 		}
 		cam_fx_faceswap_set_enabled(filter->fx, face_swap ? 1 : 0);
@@ -495,6 +509,7 @@ static void cam_effects_get_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, SETTING_FACE_IMAGE, "");
 	obs_data_set_default_double(settings, SETTING_SWAP_INTENSITY, 1.0);
 	obs_data_set_default_double(settings, SETTING_SWAP_SHARPNESS, 0.0);
+	obs_data_set_default_bool(settings, SETTING_SWAP_DETECT_EVERY_FRAME, false);
 	obs_data_set_default_int(settings, SETTING_SWAP_PRESERVE_MOUTH, 0);
 	obs_data_set_default_bool(settings, SETTING_SWAP_WATERMARK, true);
 }
@@ -595,6 +610,7 @@ static obs_properties_t *cam_effects_properties(void *data)
 					"Swap intensity", 0.0, 1.0, 0.05);
 	obs_properties_add_float_slider(props, SETTING_SWAP_SHARPNESS,
 					"Swap sharpness", 0.0, 1.0, 0.05);
+	obs_properties_add_bool(props, SETTING_SWAP_DETECT_EVERY_FRAME, "High-quality tracking (detect every frame)");
 	obs_properties_add_int_slider(props, SETTING_SWAP_PRESERVE_MOUTH, "Preserve mouth region", 0, 100, 1);
 	obs_properties_add_bool(props, SETTING_SWAP_WATERMARK,
 				"AI disclosure badge (recommended)");
@@ -742,11 +758,11 @@ static void cam_effects_stage_full(struct cam_effects_filter *filter,
 	}
 }
 
-/* Upload the latest swapped frame to frame_tex (created/recreated on
+/* Upload the latest full-route frame to frame_tex (created/recreated on
  * size change; uploaded only when the sequence advanced). Returns
  * frame_tex, or NULL when unavailable. The bridge buffer is packed
- * BGRA (linesize == w*4) and stays valid until the next
- * cam_fx_try_get_frame call. */
+ * BGRA (linesize == w*4) and stays valid until the next result
+ * retrieval call. */
 static gs_texture_t *cam_effects_frame_tex(struct cam_effects_filter *filter,
 					   const uint8_t *data, int w, int h,
 					   uint64_t seq)
@@ -773,22 +789,8 @@ static gs_texture_t *cam_effects_frame_tex(struct cam_effects_filter *filter,
 	return filter->frame_tex;
 }
 
-/* Draw the contents of out_render to screen. */
-static void cam_effects_draw_out(struct cam_effects_filter *filter,
-				 uint32_t w, uint32_t h)
-{
-	gs_texture_t *tex = gs_texrender_get_texture(filter->out_render);
-	if (!tex)
-		return;
-	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-	gs_eparam_t *image = gs_effect_get_param_by_name(def, "image");
-	gs_effect_set_texture(image, tex);
-	while (gs_effect_loop(def, "Draw"))
-		gs_draw_sprite(tex, 0, w, h);
-}
-
 /* Runs `passes` Kawase blur iterations at half resolution. The source
- * is src_tex when given (face swap: the swapped frame), otherwise the
+ * is src_tex when given (face swap: the full-route frame), otherwise the
  * target is rendered directly (background-only path, unchanged).
  * Returns the texture containing the blurred result, or NULL. */
 static gs_texture_t *cam_effects_blur(struct cam_effects_filter *filter,
@@ -861,22 +863,33 @@ static gs_texture_t *cam_effects_blur(struct cam_effects_filter *filter,
 /* Lazily create the badge texture on the graphics thread (first fs
  * render with the badge on). The pixels come from the fx core via the
  * bridge (tightly-packed RGBA, bfree'd after upload). */
-static void cam_effects_ensure_watermark(struct cam_effects_filter *filter)
+static bool cam_effects_ensure_watermark(struct cam_effects_filter *filter)
 {
 	if (filter->wm_tex)
-		return;
+		return true;
 	int bw = 0, bh = 0;
 	uint8_t *px = cam_fx_watermark_badge_rgba(&bw, &bh);
 	if (!px || bw <= 0 || bh <= 0) {
 		bfree(px);
-		return;
+		return false;
 	}
 	const uint8_t *levels[1] = {px};
 	filter->wm_tex = gs_texture_create((uint32_t)bw, (uint32_t)bh,
 					   GS_RGBA, 1, levels, 0);
+	bfree(px);
+	if (!filter->wm_tex)
+		return false;
 	filter->wm_w = (uint32_t)bw;
 	filter->wm_h = (uint32_t)bh;
-	bfree(px);
+	return true;
+}
+
+static bool cam_effects_watermark_fits(struct cam_effects_filter *filter, uint32_t w, uint32_t h)
+{
+	if (!filter->wm_tex || filter->wm_w == 0 || filter->wm_h == 0 || filter->wm_w > w || filter->wm_h > h)
+		return false;
+	uint32_t margin = h / 40;
+	return margin <= w - filter->wm_w && margin <= h - filter->wm_h;
 }
 
 /* Post-composite AI disclosure badge (spec §9): drawn by the FILTER on
@@ -889,12 +902,10 @@ static void cam_effects_ensure_watermark(struct cam_effects_filter *filter)
 static void cam_effects_draw_watermark(struct cam_effects_filter *filter,
 				       uint32_t w, uint32_t h)
 {
-	if (!filter->wm_tex || w == 0 || h == 0)
+	if (!cam_effects_watermark_fits(filter, w, h))
 		return;
 	uint32_t wm_w = filter->wm_w, wm_h = filter->wm_h;
 	uint32_t margin = h / 40;
-	if (w < wm_w + margin || h < wm_h + margin)
-		return;
 	gs_matrix_push();
 	gs_matrix_translate3f((float)(w - wm_w - margin),
 			      (float)(h - wm_h - margin), 0.0f);
@@ -904,6 +915,53 @@ static void cam_effects_draw_watermark(struct cam_effects_filter *filter,
 	while (gs_effect_loop(def, "Draw"))
 		gs_draw_sprite(filter->wm_tex, 0, wm_w, wm_h);
 	gs_matrix_pop();
+}
+
+static bool cam_effects_commit_black(struct cam_effects_filter *filter, uint32_t w, uint32_t h)
+{
+	if (!filter->out_work || w == 0 || h == 0)
+		return false;
+	gs_texrender_reset(filter->out_work);
+	if (!gs_texrender_begin(filter->out_work, w, h))
+		return false;
+	struct vec4 clear;
+	vec4_zero(&clear);
+	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+	gs_texrender_end(filter->out_work);
+	gs_texrender_t *committed = filter->out_render;
+	filter->out_render = filter->out_work;
+	filter->out_work = committed;
+	filter->out_has_ai = false;
+	return true;
+}
+
+/* The only path that displays out_render. If enabled disclosure cannot be
+ * shown, passthrough uses raw while freeze commits privacy-safe black. */
+static void cam_effects_draw_output(struct cam_effects_filter *filter, uint32_t w, uint32_t h, bool freeze)
+{
+	bool badge_required = filter->out_has_ai &&
+			      atomic_load_explicit(&filter->watermark_on, memory_order_relaxed) != 0;
+	if (badge_required && (!cam_effects_ensure_watermark(filter) || !cam_effects_watermark_fits(filter, w, h))) {
+		if (!freeze) {
+			obs_source_skip_video_filter(filter->source);
+			return;
+		}
+		if (!cam_effects_commit_black(filter, w, h))
+			return;
+		badge_required = false;
+	}
+	if (!filter->out_render)
+		return;
+	gs_texture_t *tex = gs_texrender_get_texture(filter->out_render);
+	if (!tex)
+		return;
+	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_eparam_t *image = gs_effect_get_param_by_name(def, "image");
+	gs_effect_set_texture(image, tex);
+	while (gs_effect_loop(def, "Draw"))
+		gs_draw_sprite(tex, 0, w, h);
+	if (badge_required)
+		cam_effects_draw_watermark(filter, w, h);
 }
 
 static void cam_effects_video_render(void *data, gs_effect_t *effect)
@@ -920,14 +978,24 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	obs_source_t *target = obs_filter_get_target(filter->source);
 	uint32_t w = target ? obs_source_get_base_width(target) : 0;
 	uint32_t h = target ? obs_source_get_base_height(target) : 0;
+	bool faceswap_failed = filter->fx && cam_fx_faceswap_failed(filter->fx) == 1;
+
+	/* A terminal backend failure supersedes every route immediately. Never
+	 * stage or reuse a prior result while waiting for ordinary staleness. */
+	if (faceswap_failed) {
+		if (freeze)
+			cam_effects_draw_output(filter, w ? w : 1920, h ? h : 1080, freeze);
+		else
+			obs_source_skip_video_filter(filter->source);
+		return;
+	}
 
 	if (!target || !filter->effect) {
 		/* No target, or the effect failed to load: honor the
 		 * failure mode. Freeze shows the last composite (black
 		 * before the first), passthrough shows the raw feed. */
-		if (freeze && mode != MODE_OFF) {
-			cam_effects_draw_out(filter, w ? w : 1920,
-					     h ? h : 1080);
+		if (freeze && (mode != MODE_OFF || face_swap)) {
+			cam_effects_draw_output(filter, w ? w : 1920, h ? h : 1080, freeze);
 			return;
 		}
 		obs_source_skip_video_filter(filter->source);
@@ -936,34 +1004,24 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 
 	/* Face swap dataflow: submit ONLY the full-res frame (the worker
 	 * runs swap -> segmentation on it and publishes frame+mask) and
-	 * composite the swapped frame it returns. Requires the setting,
-	 * a running engine, bridge availability (models + CUDA) and a
-	 * target within the staging cap; anything else falls back to the
-	 * background-only 192 dataflow (byte-identical to face swap off). */
+	 * composite the processed frame it returns. Requires the setting,
+	 * a successfully activated bridge pipeline and a target within the
+	 * staging cap; anything else falls back to the background-only 192
+	 * dataflow (byte-identical to face swap off). */
 	bool oversize = face_swap &&
 			(w > FULL_STAGE_MAX_W || h > FULL_STAGE_MAX_H);
-	filter->full_oversize = oversize;
+	atomic_store_explicit(&filter->full_oversize, oversize, memory_order_relaxed);
 	if (oversize && !filter->full_oversize_logged) {
 		filter->full_oversize_logged = true;
 		blog(LOG_WARNING,
 		     "obs-cam-effects: source %ux%u exceeds the %dx%d face-swap staging cap; face swap skipped (background only)",
 		     w, h, FULL_STAGE_MAX_W, FULL_STAGE_MAX_H);
 	}
-	bool fs = face_swap && filter->fx && w > 0 && h > 0 &&
-		  !oversize && cam_fx_faceswap_available(filter->fx) == 1;
-
-	bool watermark_on = atomic_load_explicit(&filter->watermark_on,
-						 memory_order_relaxed) != 0;
-	/* Disclosure badge gate: face swap on, badge enabled, and a
-	 * swapped-frame composite (or frozen composite) on screen. */
-	bool wm_show = false;
-	if (fs && watermark_on)
-		cam_effects_ensure_watermark(filter);
+	bool fs = face_swap && filter->fx && w > 0 && h > 0 && !oversize && cam_fx_faceswap_enabled(filter->fx) == 1;
 
 	if (!fs && (mode == MODE_OFF || w == 0 || h == 0 || !filter->fx)) {
-		if (freeze && mode != MODE_OFF) {
-			cam_effects_draw_out(filter, w ? w : 1920,
-					     h ? h : 1080);
+		if (freeze && (mode != MODE_OFF || face_swap)) {
+			cam_effects_draw_output(filter, w ? w : 1920, h ? h : 1080, freeze);
 			return;
 		}
 		obs_source_skip_video_filter(filter->source);
@@ -977,24 +1035,24 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 
 	const uint8_t *mask = NULL;
 	int mw = 0, mh = 0;
-	uint64_t seq = 0;
-	bool have_mask =
-		cam_fx_try_get_mask(filter->fx, &mask, &mw, &mh, &seq) == 1;
-
 	const uint8_t *fdata = NULL;
 	int fw = 0, fh = 0;
-	uint64_t fseq = 0;
-	bool have_frame =
-		fs && cam_fx_try_get_frame(filter->fx, &fdata, &fw, &fh,
-					   &fseq) == 1;
+	uint64_t seq = 0;
+	int result_flags = cam_fx_try_get_result(filter->fx, &mask, &mw, &mh, &fdata, &fw, &fh, &seq);
+	bool have_mask = (result_flags & CAM_FX_RESULT_MASK) != 0;
+	bool have_frame = (result_flags & CAM_FX_RESULT_FRAME) != 0;
+	bool have_ai = (result_flags & CAM_FX_RESULT_AI) != 0;
 
-	/* Face swap keys on the swapped frame (mask seq is shared with
-	 * it); background-only keys on the mask, as before. */
-	bool ready = fs ? have_frame : have_mask;
+	/* Every background composite requires a current, correctly sized
+	 * mask. Every face-swap composite requires a frame matching this
+	 * target exactly; face-swap-only output does not consume a mask. */
+	bool valid_mask = have_mask && mw == STAGE_SIZE && mh == STAGE_SIZE;
+	bool valid_frame = have_frame && fw == (int)w && fh == (int)h;
+	bool ready = fs ? (mode == MODE_OFF ? valid_frame : valid_frame && valid_mask) : valid_mask && !have_frame;
 	if (!ready) {
 		/* Startup: nothing processed yet. */
 		if (freeze) {
-			cam_effects_draw_out(filter, w, h); /* black */
+			cam_effects_draw_output(filter, w, h, freeze); /* black before first output */
 			return;
 		}
 		obs_source_skip_video_filter(filter->source);
@@ -1004,56 +1062,54 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	if (!cam_fx_is_fresh(filter->fx, MASK_STALE_MS)) {
 		/* Inference stalled. */
 		if (freeze) {
-			/* The frozen out_render still holds the last swap
-			 * composite: keep the badge visible (§8/§9). */
-			wm_show = fs;
-			cam_effects_draw_out(filter, w, h);
-			if (wm_show && watermark_on)
-				cam_effects_draw_watermark(filter, w, h);
+			cam_effects_draw_output(filter, w, h, freeze);
 			return;
 		}
 		obs_source_skip_video_filter(filter->source);
 		return;
 	}
 
-	gs_texture_t *frame_tex =
-		fs ? cam_effects_frame_tex(filter, fdata, fw, fh, fseq)
-		   : NULL;
+	gs_texture_t *frame_tex = fs ? cam_effects_frame_tex(filter, fdata, fw, fh, seq) : NULL;
 
-	/* Face swap alone (background off): the swapped frame IS the
-	 * output. Route it through out_render so the freeze failure mode
-	 * shows the last COMPOSITED frame; the disclosure badge is a
-	 * post-composite overlay drawn on top (spec §8/§9). Draws like
-	 * cam_effects_draw_out but for frame_tex. */
+	/* Face swap alone (background off): render the full-route frame into
+	 * out_work and commit it only after a draw. The disclosure badge is a
+	 * post-composite overlay drawn on top (spec §8/§9). */
 	if (fs && mode == MODE_OFF) {
-		gs_texrender_reset(filter->out_render);
-		if (frame_tex && gs_texrender_begin(filter->out_render, w, h)) {
-			struct vec4 clear;
-			vec4_zero(&clear);
-			gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
-			gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f,
-				 100.0f);
-			gs_blend_state_push();
-			gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
-			gs_effect_t *def =
-				obs_get_base_effect(OBS_EFFECT_DEFAULT);
-			gs_effect_set_texture(
-				gs_effect_get_param_by_name(def, "image"),
-				frame_tex);
-			while (gs_effect_loop(def, "Draw"))
-				gs_draw_sprite(frame_tex, 0, w, h);
-			gs_blend_state_pop();
-			gs_texrender_end(filter->out_render);
+		bool wrote = false;
+		if (frame_tex && filter->out_work) {
+			gs_texrender_reset(filter->out_work);
+			if (gs_texrender_begin(filter->out_work, w, h)) {
+				struct vec4 clear;
+				vec4_zero(&clear);
+				gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+				gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
+				gs_blend_state_push();
+				gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+				gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+				gs_effect_set_texture(gs_effect_get_param_by_name(def, "image"), frame_tex);
+				while (gs_effect_loop(def, "Draw")) {
+					gs_draw_sprite(frame_tex, 0, w, h);
+					wrote = true;
+				}
+				gs_blend_state_pop();
+				gs_texrender_end(filter->out_work);
+			}
 		}
-		wm_show = true;
-		cam_effects_draw_out(filter, w, h);
-		if (wm_show && watermark_on)
-			cam_effects_draw_watermark(filter, w, h);
+		if (wrote) {
+			gs_texrender_t *previous = filter->out_render;
+			filter->out_render = filter->out_work;
+			filter->out_work = previous;
+			filter->out_has_ai = have_ai;
+		}
+		if (wrote || freeze)
+			cam_effects_draw_output(filter, w, h, freeze);
+		else
+			obs_source_skip_video_filter(filter->source);
 		return;
 	}
 
-	/* Upload mask and composite into out_render. */
-	if (mw == STAGE_SIZE && mh == STAGE_SIZE)
+	/* Upload mask and composite into out_work. */
+	if (filter->mask_tex && mw == STAGE_SIZE && mh == STAGE_SIZE)
 		gs_texture_set_image(filter->mask_tex, mask, (uint32_t)mw,
 				     false);
 
@@ -1069,31 +1125,33 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	struct vec4 solid_color;
 	vec4_from_rgba(&solid_color, (uint32_t)atomic_load_explicit(&filter->greenscreen_color, memory_order_relaxed));
 
-	/* Blur must run before out_render begins (it renders into its
+	/* Blur must run before out_work begins (it renders into its
 	 * own texrenders). Fall back to transparent if the kawase effect
 	 * failed to load or the blur pass fails. Face swap blurs
 	 * frame_tex; otherwise the target is re-rendered as before. */
 	gs_texture_t *blur = NULL;
-	if (mode == MODE_BLUR && filter->blur_effect) {
+	if (mode == MODE_BLUR && filter->blur_effect && (!fs || frame_tex)) {
 		blur = cam_effects_blur(filter, target,
 					fs ? frame_tex : NULL, w, h);
 		if (blur)
 			tech = "DrawBlur";
 	}
 
-	gs_texrender_reset(filter->out_render);
-	if (gs_texrender_begin(filter->out_render, w, h)) {
-		/* texrender keeps the caller's projection: set our own
+	bool wrote = false;
+	if (filter->out_work && filter->mask_tex && (!fs || frame_tex)) {
+		gs_texrender_reset(filter->out_work);
+		if (gs_texrender_begin(filter->out_work, w, h)) {
+			/* texrender keeps the caller's projection: set our own
 		 * ortho + replace-blend + clear, like the staging path,
 		 * so the composite fills the target exactly. */
-		struct vec4 clear;
-		vec4_zero(&clear);
-		gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
-		gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
-		gs_blend_state_push();
-		gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
-		if (frame_tex) {
-			/* Swapped frame: drive the technique manually.
+			struct vec4 clear;
+			vec4_zero(&clear);
+			gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+			gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
+			gs_blend_state_push();
+			gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+			if (fs) {
+				/* Full-route frame: drive the technique manually.
 			 * process_filter_tech_end -> render_filter_tex
 			 * rebinds "image" to the unswapped parent
 			 * texture unconditionally (params upload at
@@ -1103,62 +1161,51 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 			 * the parent for nothing. ViewProj is
 			 * auto-populated from the current projection
 			 * (same convention as the Kawase helper). */
-			gs_effect_set_texture(
-				gs_effect_get_param_by_name(filter->effect,
-							    "image"),
-				frame_tex);
-			gs_effect_set_texture(
-				gs_effect_get_param_by_name(filter->effect,
-							    "mask"),
-				filter->mask_tex);
-			if (filter->bg_loaded)
-				gs_effect_set_texture(
-					gs_effect_get_param_by_name(
-						filter->effect, "bg_image"),
-					filter->bg_image.texture);
-			if (blur)
-				gs_effect_set_texture(
-					gs_effect_get_param_by_name(
-						filter->effect, "blur_image"),
-					blur);
-			if (mode == MODE_GREEN_SCREEN)
-				gs_effect_set_vec4(gs_effect_get_param_by_name(filter->effect, "solid_color"),
-						   &solid_color);
-			while (gs_effect_loop(filter->effect, tech))
-				gs_draw_sprite(frame_tex, 0, w, h);
-		} else if (obs_source_process_filter_begin(
-				   filter->source, GS_BGRA,
-				   OBS_NO_DIRECT_RENDERING)) {
-			gs_effect_set_texture(
-				gs_effect_get_param_by_name(filter->effect,
-							    "mask"),
-				filter->mask_tex);
-			if (filter->bg_loaded)
-				gs_effect_set_texture(
-					gs_effect_get_param_by_name(
-						filter->effect, "bg_image"),
-					filter->bg_image.texture);
-			if (blur)
-				gs_effect_set_texture(
-					gs_effect_get_param_by_name(
-						filter->effect, "blur_image"),
-					blur);
-			if (mode == MODE_GREEN_SCREEN)
-				gs_effect_set_vec4(gs_effect_get_param_by_name(filter->effect, "solid_color"),
-						   &solid_color);
-			obs_source_process_filter_tech_end(filter->source,
-							   filter->effect, w,
-							   h, tech);
+				gs_effect_set_texture(gs_effect_get_param_by_name(filter->effect, "image"), frame_tex);
+				gs_effect_set_texture(gs_effect_get_param_by_name(filter->effect, "mask"),
+						      filter->mask_tex);
+				if (filter->bg_loaded)
+					gs_effect_set_texture(gs_effect_get_param_by_name(filter->effect, "bg_image"),
+							      filter->bg_image.texture);
+				if (blur)
+					gs_effect_set_texture(gs_effect_get_param_by_name(filter->effect, "blur_image"),
+							      blur);
+				if (mode == MODE_GREEN_SCREEN)
+					gs_effect_set_vec4(gs_effect_get_param_by_name(filter->effect, "solid_color"),
+							   &solid_color);
+				while (gs_effect_loop(filter->effect, tech)) {
+					gs_draw_sprite(frame_tex, 0, w, h);
+					wrote = true;
+				}
+			} else if (obs_source_process_filter_begin(filter->source, GS_BGRA, OBS_NO_DIRECT_RENDERING)) {
+				gs_effect_set_texture(gs_effect_get_param_by_name(filter->effect, "mask"),
+						      filter->mask_tex);
+				if (filter->bg_loaded)
+					gs_effect_set_texture(gs_effect_get_param_by_name(filter->effect, "bg_image"),
+							      filter->bg_image.texture);
+				if (blur)
+					gs_effect_set_texture(gs_effect_get_param_by_name(filter->effect, "blur_image"),
+							      blur);
+				if (mode == MODE_GREEN_SCREEN)
+					gs_effect_set_vec4(gs_effect_get_param_by_name(filter->effect, "solid_color"),
+							   &solid_color);
+				obs_source_process_filter_tech_end(filter->source, filter->effect, w, h, tech);
+				wrote = true;
+			}
+			gs_blend_state_pop();
+			gs_texrender_end(filter->out_work);
 		}
-		gs_blend_state_pop();
-		gs_texrender_end(filter->out_render);
 	}
-	/* Swapped frame composited this tick (fs manual loop only;
-	 * process_filter_begin draws the raw parent). */
-	wm_show = frame_tex != NULL;
-	cam_effects_draw_out(filter, w, h);
-	if (wm_show && watermark_on)
-		cam_effects_draw_watermark(filter, w, h);
+	if (wrote) {
+		gs_texrender_t *previous = filter->out_render;
+		filter->out_render = filter->out_work;
+		filter->out_work = previous;
+		filter->out_has_ai = have_ai;
+	}
+	if (wrote || freeze)
+		cam_effects_draw_output(filter, w, h, freeze);
+	else
+		obs_source_skip_video_filter(filter->source);
 }
 
 static struct obs_source_info cam_effects_filter_info = {

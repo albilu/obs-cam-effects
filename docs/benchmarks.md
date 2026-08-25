@@ -56,3 +56,18 @@ Fixture: `tests/data/face-test.jpg` (640×799, real face, detection score 0.95).
 **CPU face swap is not viable** (spec confirmed): 0.8 fps end-to-end — the 174.7-GFLOP inswapper dominates (~1.25 s/frame). YuNet detect alone (10.2 ms) would be fine on CPU.
 
 **CUDA face swap is viable: 32.2 fps end-to-end** with the shipped defaults (fp16 inswapper + detection decimation), up from 24.4 fps (fp32, detect every frame). inswapper drops 1246 ms → 15.8 ms (fp32) → 9.5 ms (fp16) on the classic API; the remaining e2e budget is CPU-side detect (~10 ms every frame, ~5 ms amortized at `detectEveryN=2`) plus align/paste-back/watermark. Verified in the real plugin too: `pipeline tier in effect: quality (backend: CUDA)` + masks flowing, OBS smoke run 2026-08-06.
+
+## Bounded paste-back (2026-08-23)
+
+CPU: 12th Gen Intel(R) Core(TM) i9-12900KF.
+
+Build: CMake cache `CMAKE_BUILD_TYPE=RelWithDebInfo` and `CMAKE_CXX_FLAGS_RELWITHDEBINFO=-O2 -g -DNDEBUG`.
+
+Method: five warm-up iterations followed by the median of 31 measured iterations per implementation. Both implementations received the same deterministic frame, face, fixed feathered-ellipse mask, centered 128x128 crop, and intensity 1. Frame copies were outside the timed region.
+
+```text
+640x480 full=10.667 ms bounded=0.489 ms speedup=21.827x old_full_frame_scratch=1228800 bytes
+1920x1080 full=69.939 ms bounded=0.490 ms speedup=142.829x old_full_frame_scratch=8294400 bytes
+```
+
+This microbenchmark isolates CPU paste-back. It excludes YuNet, inswapper, OBS GPU readback/upload, optional background segmentation, and compositing. The output frame remains at its source dimensions.

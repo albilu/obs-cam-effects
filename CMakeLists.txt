@@ -116,6 +116,7 @@ add_library(
   src/fx/engine/ep_probe.cpp
   src/fx/engine/ort_backend.cpp
   src/fx/image/align.cpp
+  src/fx/image/face_paste.cpp
   src/fx/image/ops.cpp
   src/fx/models/pp_humanseg.cpp
   src/fx/models/face_embedder.cpp
@@ -124,6 +125,7 @@ add_library(
   src/fx/models/rvm.cpp
   src/fx/models/yunet.cpp
   src/fx/models_dl/downloader.cpp
+  src/fx/pipeline/face_tracker.cpp
   src/fx/pipeline/face_swap_pipeline.cpp
   src/fx/pipeline/segmentation_pipeline.cpp
   src/fx/worker.cpp
@@ -283,6 +285,8 @@ if(BUILD_TESTING)
     tests/test_face_embedder.cpp
     tests/test_yunet.cpp
     tests/test_face_swap_pipeline.cpp
+    tests/test_face_tracker.cpp
+    tests/test_face_paste.cpp
   )
   target_link_libraries(fx_tests PRIVATE fx GTest::gtest_main)
   target_compile_features(fx_tests PRIVATE cxx_std_20)
@@ -292,6 +296,12 @@ if(BUILD_TESTING)
   )
   set_target_properties(fx_tests PROPERTIES BUILD_RPATH ${ORT_ROOT}/lib)
   gtest_discover_tests(fx_tests)
+
+  # Standalone microbenchmark, intentionally not registered with CTest.
+  add_executable(fx_face_paste_bench tests/bench_face_paste.cpp)
+  target_link_libraries(fx_face_paste_bench PRIVATE fx)
+  target_compile_features(fx_face_paste_bench PRIVATE cxx_std_20)
+  set_target_properties(fx_face_paste_bench PROPERTIES BUILD_RPATH ${ORT_ROOT}/lib)
 endif()
 
 # --- CPack: tarball (per-user) + deb (system install) ---

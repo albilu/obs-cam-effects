@@ -19,20 +19,24 @@ namespace fx {
 
 namespace {
 
-Ort::SessionOptions makeSessionOptions(int intraOpThreads, bool cuda)
+Ort::SessionOptions makeSessionOptions(int intraOpThreads, bool cuda, OrtExecutionPolicy policy)
 {
 	Ort::SessionOptions opts;
 	opts.SetIntraOpNumThreads(intraOpThreads);
 	opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 	if (cuda) {
+		/* Strict sessions must not let ORT silently assign nodes to CPU. */
+		if (policy == OrtExecutionPolicy::RequireCuda)
+			opts.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
+
 		/* The classic append API logs through ORT's DefaultLogger,
 		 * which exists only once an Env has been created. Force ours
 		 * first: in the OrtModel ctor the Env and the options are
 		 * built in the same expression, whose evaluation order is
 		 * unspecified — without this the FIRST CUDA session in a
 		 * process fails with "Attempt to use DefaultLogger but
-		 * none has been registered" and silently falls back to
-		 * CPU. */
+		 * none has been registered" and is treated as a CUDA
+		 * initialization failure. */
 		(void)engine::sharedEnv();
 		/* Classic CUDA EP API: present only in the full GPU ORT
 		 * build, resolved at runtime so the plugin still loads
@@ -45,37 +49,84 @@ Ort::SessionOptions makeSessionOptions(int intraOpThreads, bool cuda)
 			throw std::runtime_error(
 				"fx: classic CUDA API unavailable");
 		OrtStatusPtr st = appendCuda(opts, 0);
-		if (st) {
-			Ort::GetApi().ReleaseStatus(st);
-			throw std::runtime_error("fx: CUDA append failed");
-		}
+		Ort::ThrowOnError(st);
 	}
 	return opts;
 }
 
+bool isProviderFailure(OrtErrorCode code) noexcept
+{
+	switch (code) {
+	case ORT_FAIL:
+	case ORT_ENGINE_ERROR:
+	case ORT_RUNTIME_EXCEPTION:
+	case ORT_EP_FAIL:
+	case ORT_DEVICE_RESET:
+		return true;
+	default:
+		return false;
+	}
+}
+
 } // namespace
 
-OrtModel::OrtModel(const std::string &modelPath, int intraOpThreads,
-		   bool tryCuda)
-	: session_(nullptr), modelPath_(modelPath),
+OrtBackendState::OrtBackendState(OrtExecutionPolicy policy) noexcept : policy_(policy) {}
+
+OrtBackend OrtBackendState::backend() const noexcept
+{
+	return backend_.load();
+}
+
+void OrtBackendState::setBackend(OrtBackend backend) noexcept
+{
+	backend_.store(backend);
+}
+
+OrtRunFailureAction OrtBackendState::onRunFailure(OrtErrorCode code) noexcept
+{
+	if (backend() != OrtBackend::Cuda || !isProviderFailure(code))
+		return OrtRunFailureAction::Rethrow;
+	if (policy_ == OrtExecutionPolicy::AllowCpuFallback)
+		return OrtRunFailureAction::RetryCpu;
+	setBackend(OrtBackend::Failed);
+	return OrtRunFailureAction::Rethrow;
+}
+
+void OrtBackendState::markCpuFallbackReady() noexcept
+{
+	setBackend(OrtBackend::Cpu);
+}
+
+void OrtBackendState::markCpuFallbackFailed() noexcept
+{
+	setBackend(OrtBackend::Failed);
+}
+
+OrtModel::OrtModel(const std::string &modelPath, int intraOpThreads, bool tryCuda, OrtExecutionPolicy policy)
+	: backendState_(policy),
+	  session_(nullptr),
+	  modelPath_(modelPath),
 	  intraOpThreads_(intraOpThreads)
 {
-	if (tryCuda && EpProbe::cudaAvailable()) {
+	const bool cudaAvailable = tryCuda && EpProbe::cudaAvailable();
+	if (policy == OrtExecutionPolicy::RequireCuda && !cudaAvailable)
+		throw std::runtime_error("fx: CUDA execution required");
+
+	if (cudaAvailable) {
 		try {
-			session_ = Ort::Session(
-				engine::sharedEnv(), modelPath.c_str(),
-				makeSessionOptions(intraOpThreads, true));
-			cuda_ = true;
-		} catch (...) {
-			/* CUDA append or session init failed: CPU-only
-			 * fallback (fx is OBS-free, nothing to log to). */
-			cuda_ = false;
+			session_ = Ort::Session(engine::sharedEnv(), modelPath.c_str(),
+						makeSessionOptions(intraOpThreads, true, policy));
+			backendState_.setBackend(OrtBackend::Cuda);
+		} catch (const Ort::Exception &error) {
+			if (policy == OrtExecutionPolicy::RequireCuda || !isProviderFailure(error.GetOrtErrorCode()))
+				throw;
 		}
 	}
-	if (!cuda_)
-		session_ = Ort::Session(
-			engine::sharedEnv(), modelPath.c_str(),
-			makeSessionOptions(intraOpThreads, false));
+	if (backend() != OrtBackend::Cuda) {
+		session_ = Ort::Session(engine::sharedEnv(), modelPath.c_str(),
+					makeSessionOptions(intraOpThreads, false, policy));
+		backendState_.setBackend(OrtBackend::Cpu);
+	}
 
 	if (session_.GetInputCount() == 0 || session_.GetOutputCount() == 0)
 		throw std::runtime_error("fx: model with no inputs/outputs");
@@ -113,6 +164,8 @@ std::vector<std::vector<float>>
 OrtModel::runImpl(const std::vector<std::vector<float>> &inputData,
 		  const std::vector<std::vector<int64_t>> *overrides)
 {
+	if (backend() == OrtBackend::Failed)
+		throw std::runtime_error("fx: CUDA execution failed");
 	if (inputData.size() != inputs_.size())
 		throw std::runtime_error("fx: input tensor count mismatch");
 
@@ -153,6 +206,9 @@ OrtModel::tryRun(std::vector<Ort::Value> &inTensors,
 		 std::vector<const char *> &outNames,
 		 Ort::MemoryInfo &cpuMem)
 {
+	if (backend() == OrtBackend::Failed)
+		throw std::runtime_error("fx: CUDA execution failed");
+
 	/* IoBinding with outputs bound to CPU memory: ORT copies results
 	 * back from the device (required for the CUDA EP — raw Run()
 	 * returns device-resident tensors whose pointers must not be
@@ -171,17 +227,20 @@ OrtModel::tryRun(std::vector<Ort::Value> &inTensors,
 
 	try {
 		return runBound();
-	} catch (...) {
-		if (!cuda_)
+	} catch (const Ort::Exception &error) {
+		if (backendState_.onRunFailure(error.GetOrtErrorCode()) != OrtRunFailureAction::RetryCpu)
 			throw;
-		/* The CUDA EP loaded but fails at run time (e.g. broken
-		 * cuDNN/driver on the host): degrade permanently to a CPU
-		 * session instead of failing every frame. */
-		cuda_ = false;
-		session_ = Ort::Session(engine::sharedEnv(),
-					modelPath_.c_str(),
-					makeSessionOptions(intraOpThreads_,
-							   false));
+		/* Keep Cuda published until a replacement session is installed. */
+		try {
+			Ort::Session cpuSession(engine::sharedEnv(), modelPath_.c_str(),
+						makeSessionOptions(intraOpThreads_, false,
+								   OrtExecutionPolicy::AllowCpuFallback));
+			session_ = std::move(cpuSession);
+		} catch (...) {
+			backendState_.markCpuFallbackFailed();
+			throw;
+		}
+		backendState_.markCpuFallbackReady();
 		return runBound();
 	}
 }

@@ -1,6 +1,7 @@
 #include "fx/pipeline/face_swap_pipeline.h"
 
 #include "fx/image/align.h"
+#include "fx/image/face_paste.h"
 
 #include <algorithm>
 #include <cmath>
@@ -17,13 +18,10 @@ constexpr int kLatent = 512; // inswapper source latent dims
 
 } // namespace
 
-FaceSwapPipeline::FaceSwapPipeline(const std::string &yunetPath,
-				   const std::string &inswapperPath,
-				   const std::string &arcfacePath, int threads,
-				   bool tryCuda)
+FaceSwapPipeline::FaceSwapPipeline(const std::string &yunetPath, const std::string &inswapperPath, int threads,
+				   bool tryCuda, OrtExecutionPolicy swapPolicy)
 	: detector_(yunetPath, threads, tryCuda),
-	  swapper_(inswapperPath, threads, tryCuda),
-	  embedder_(arcfacePath, inswapperPath, threads, tryCuda)
+	  swapper_(inswapperPath, threads, tryCuda, swapPolicy)
 {
 	/* Verified inswapper_128 IO: target [1,3,128,128], source [1,512],
 	 * output [1,3,128,128]. */
@@ -37,63 +35,42 @@ FaceSwapPipeline::FaceSwapPipeline(const std::string &yunetPath,
 	    out0.size() != 4 || out0[1] != 3 || out0[2] != kCrop ||
 	    out0[3] != kCrop)
 		throw std::runtime_error("fx: unexpected inswapper IO shape");
+
+	const std::vector<float> mask = ellipseMask(kCrop, 0.35f, 0.45f, 12);
+	mask128_.resize(mask.size());
+	for (size_t i = 0; i < mask.size(); i++)
+		mask128_[i] = (uint8_t)std::lround(mask[i] * 255.0f);
 }
 
 void FaceSwapPipeline::setSourceEmbedding(std::vector<float> latent)
 {
 	sourceLatent_ = std::move(latent);
+	resetTracking();
+}
+
+void FaceSwapPipeline::resetTracking()
+{
+	tracker_.reset();
 }
 
 bool FaceSwapPipeline::process(Frame &frame)
 {
+	if (swapBackend() == OrtBackend::Failed)
+		throw std::runtime_error("fx: CUDA execution failed");
 	if (!hasSource())
 		return false;
 	const int w = frame.width, h = frame.height;
 	if (w <= 0 || h <= 0 || frame.bgra.size() != (size_t)w * h * 4)
 		return false;
 
-	/* Detection decimation: YuNet runs on every detectEveryN-th
-	 * frame (and whenever there is no usable previous box); skipped
-	 * frames reuse prevBox_, which the EMA below already stabilizes.
-	 * Align/swap/paste-back still run EVERY frame from the latest
-	 * box. A no-face detect frame invalidates the previous box. */
-	const int everyN = params_.detectEveryN;
-	const bool doDetect = everyN <= 1 ||
-			      (frameCount_ % (uint64_t)everyN) == 0 ||
-			      !havePrevBox_;
-	frameCount_++;
-	if (doDetect) {
+	if (tracker_.shouldDetect(w, h, params_.detectEveryN)) {
 		auto faces = detector_.detect(frame);
-		if (faces.empty()) {
-			havePrevBox_ = false;
+		if (!tracker_.observe(faces, params_.bboxEma))
 			return false;
-		}
-		const FaceBox *best = &faces[0];
-		for (const FaceBox &f : faces)
-			if (f.w * f.h > best->w * best->h)
-				best = &f;
-
-		/* Temporal smoothing: smoothed = ema*prev + (1-ema)*current,
-		 * per box component and per landmark coordinate. The
-		 * SMOOTHED geometry drives everything below (anti-
-		 * jitter). */
-		FaceBox box = *best;
-		if (havePrevBox_) {
-			const float ema = params_.bboxEma, cur = 1.0f - ema;
-			box.x = ema * prevBox_.x + cur * box.x;
-			box.y = ema * prevBox_.y + cur * box.y;
-			box.w = ema * prevBox_.w + cur * box.w;
-			box.h = ema * prevBox_.h + cur * box.h;
-			for (int i = 0; i < 5; i++)
-				for (int k = 0; k < 2; k++)
-					box.landmarks[i][k] =
-						ema * prevBox_.landmarks[i][k] +
-						cur * box.landmarks[i][k];
-		}
-		prevBox_ = box;
-		havePrevBox_ = true;
 	}
-	const FaceBox box = prevBox_;
+	if (!tracker_.hasBox())
+		return false;
+	const FaceBox box = tracker_.box();
 
 	/* Forward affine frame -> 128-crop (warpAffineBilinear inverts it
 	 * internally, so crop(p) = frame(M^-1 * p)). */
@@ -150,88 +127,18 @@ bool FaceSwapPipeline::process(Frame &frame)
 		unsharpMask(fake128_.data(), kCrop, kCrop, 3, 2,
 			    params_.sharpness);
 
-	/* Original needed by intensity < 1 and/or mouth restore. */
-	const bool needOrig = params_.intensity < 1.0f || params_.mouthPreserve > 0.0f;
-	if (needOrig)
+	const bool preserveMouth = params_.mouthPreserve > 0.0f;
+	if (preserveMouth)
 		origFrame_ = frame.bgra;
 
-	/* Paste-back. warpAffineBilinear(dst, src, forwardM) samples
-	 * dst(p) = src(forwardM^-1 * p). We need frame(p) = crop(M * p)
-	 * (each frame pixel samples where IT lands in crop space), i.e.
-	 * (argument)^-1 == M, so the "forward" argument must be invM. */
-	const Affine23 invM = invertAffine(m);
-	std::vector<uint8_t> fakeFull((size_t)w * h * 3);
-	warpAffineBilinear(fake128_.data(), kCrop, kCrop, 3, invM,
-			   fakeFull.data(), w, h);
-
-	/* DLC anti-wobble: FIXED feathered ellipse in 128-crop space (NOT
-	 * landmark-derived), warped to frame space with the same invM
-	 * transform (uint8 plane; the warp is channel-count generic). */
-	std::vector<uint8_t> maskFull((size_t)w * h);
-	{
-		const std::vector<float> m128 =
-			ellipseMask(kCrop, 0.35f, 0.45f, 12);
-		std::vector<uint8_t> m128u((size_t)kCrop * kCrop);
-		for (size_t i = 0; i < m128.size(); i++)
-			m128u[i] = (uint8_t)std::lround(m128[i] * 255.0f);
-		warpAffineBilinear(m128u.data(), kCrop, kCrop, 1, invM,
-				   maskFull.data(), w, h);
-	}
-
-	/* In-crop gate (whole-frame mask-bleed fix): the ellipse mask does
-	 * NOT reach 0 at the crop border (the post-feather blur leaves up
-	 * to ~0.18 there) and warpAffineBilinear CLAMPS out-of-crop
-	 * samples to that border — so every frame pixel whose crop
-	 * coordinate u,v = M*p leaves [0,kCrop)^2 would otherwise inherit
-	 * a nonzero alpha and smear clamped edge content across the whole
-	 * frame. The ellipse is only meaningful inside the crop; force
-	 * alpha 0 outside it so those pixels stay byte-identical. */
-	for (int y = 0; y < h; y++) {
-		for (int x = 0; x < w; x++) {
-			const float u =
-				m.m[0] * (float)x + m.m[1] * (float)y + m.m[2];
-			const float v =
-				m.m[3] * (float)x + m.m[4] * (float)y + m.m[5];
-			if (u < 0.0f || u >= (float)kCrop || v < 0.0f ||
-			    v >= (float)kCrop)
-				maskFull[(size_t)y * (size_t)w + x] = 0;
-		}
-	}
-
-	const size_t n = (size_t)w * h;
-	for (size_t i = 0; i < n; i++) {
-		const float a = (float)maskFull[i] / 255.0f;
-		if (a <= 0.0f)
-			continue;
-		uint8_t *d = frame.bgra.data() + i * 4;
-		const uint8_t *s = fakeFull.data() + i * 3;
-		for (int c = 0; c < 3; c++) {
-			const float v = (float)s[c] * a + (float)d[c] * (1.0f - a);
-			d[c] = (uint8_t)std::clamp((int)std::lround(v), 0, 255);
-		}
-	}
-
-	if (params_.intensity < 1.0f) {
-		const float keep = params_.intensity, orig = 1.0f - keep;
-		for (size_t i = 0; i < n; i++) {
-			if (maskFull[i] == 0)
-				continue; /* within the ellipse region */
-			uint8_t *d = frame.bgra.data() + i * 4;
-			const uint8_t *o = origFrame_.data() + i * 4;
-			for (int c = 0; c < 3; c++) {
-				const float v = (float)d[c] * keep +
-						(float)o[c] * orig;
-				d[c] = (uint8_t)std::clamp((int)std::lround(v),
-							   0, 255);
-			}
-		}
-	}
-
-	if (params_.mouthPreserve > 0.0f)
+	pasteFaceCrop(frame, fake128_, mask128_, kCrop, m, params_.intensity);
+	if (preserveMouth)
 		restoreMouthRegion(frame.bgra.data(), origFrame_.data(), w, h, 4, box.landmarks[3], box.landmarks[4],
 				   1.0f, 6, params_.mouthPreserve);
 
-	return true;
+	/* Exact zero restores the original bytes. Every other value, including
+	 * non-UI negative and non-finite values, can modify the paste result. */
+	return params_.intensity != 0.0f;
 }
 
 } // namespace fx

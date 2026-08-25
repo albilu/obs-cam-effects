@@ -12,12 +12,12 @@
 
 namespace fx {
 
-/* Payload published by the worker: always a mask on success, plus a
- * processed frame when the processor produces one (face swap), null
- * otherwise (background-only). */
+/* Payload published by the worker: a mask and/or processed frame. AI
+ * provenance is meaningful only when frame is non-null. */
 struct WorkerResult {
 	std::shared_ptr<const Mask> mask;
 	std::shared_ptr<const Frame> frame; // may be null (background-only)
+	bool aiModified = false;
 };
 
 /* Single-worker latest-wins frame processor.
@@ -36,9 +36,12 @@ public:
 	void start();
 	void stop(); // idempotent; joins
 
-	/* Replaces the processor (model hot-swap). Clears any pending frame
-	 * so no frame is processed by a stale/torn pipeline. */
+	/* Replaces the processor (model hot-swap) and invalidates pending,
+	 * in-flight, and published results from the previous processor. */
 	void setProcessor(Processor processor);
+	/* Clears pending and published results and rejects any currently
+	 * in-flight result without replacing the processor. */
+	void invalidate();
 
 	void submit(std::shared_ptr<Frame> frame);
 
@@ -61,6 +64,7 @@ private:
 	mutable std::mutex inM_;
 	std::condition_variable inCv_;
 	std::shared_ptr<Frame> pending_;
+	uint64_t epoch_ = 0;
 
 	mutable std::mutex outM_;
 	WorkerResult latest_;
