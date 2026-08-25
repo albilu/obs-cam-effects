@@ -81,27 +81,22 @@ public:
 
 	/* Multi-IO run: one flat float tensor per declared input.
 	 * Returns one flat float tensor per declared output (in order). */
-	std::vector<std::vector<float>>
-	run(const std::vector<std::vector<float>> &inputData);
+	std::vector<std::vector<float>> run(const std::vector<std::vector<float>> &inputData);
 
 	/* Multi-IO run with per-input shape override (for models with
 	 * dynamic dims like RVM's src input). overrides[i] empty = keep
 	 * declared shape. */
-	std::vector<std::vector<float>>
-	runWithShapes(const std::vector<std::vector<float>> &inputData,
-		      const std::vector<std::vector<int64_t>> &overrides);
+	std::vector<std::vector<float>> runWithShapes(const std::vector<std::vector<float>> &inputData,
+						      const std::vector<std::vector<int64_t>> &overrides);
 
 private:
-	std::vector<std::vector<float>>
-	runImpl(const std::vector<std::vector<float>> &inputData,
-		const std::vector<std::vector<int64_t>> *overrides);
+	std::vector<std::vector<float>> runImpl(const std::vector<std::vector<float>> &inputData,
+						const std::vector<std::vector<int64_t>> *overrides);
 	/* Runs the session via IoBinding (outputs bound to CPU memory, so
 	 * device tensors are copied back by ORT). Policy decides whether an
 	 * eligible CUDA provider failure retries once on a fresh CPU session. */
-	std::vector<Ort::Value> tryRun(std::vector<Ort::Value> &inTensors,
-				       std::vector<const char *> &inNames,
-				       std::vector<const char *> &outNames,
-				       Ort::MemoryInfo &cpuMem);
+	std::vector<Ort::Value> tryRun(std::vector<Ort::Value> &inTensors, std::vector<const char *> &inNames,
+				       std::vector<const char *> &outNames, Ort::MemoryInfo &cpuMem);
 	OrtBackendState backendState_;
 	Ort::Session session_;
 	std::string modelPath_;

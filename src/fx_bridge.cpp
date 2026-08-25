@@ -87,8 +87,7 @@ bool fileExists(const std::string &p)
 std::string cacheDir(const char *sub)
 {
 	const char *home = getenv("HOME");
-	return std::string(home ? home : ".") +
-	       "/.config/obs-cam-effects/" + sub;
+	return std::string(home ? home : ".") + "/.config/obs-cam-effects/" + sub;
 }
 
 /* Directory containing the running plugin .so (e.g.
@@ -103,15 +102,13 @@ std::string pluginBinDir()
 	const char *p = obs_get_module_binary_path(obs_current_module());
 	std::string path = p ? p : "";
 	size_t slash = path.find_last_of('/');
-	return slash != std::string::npos ? path.substr(0, slash)
-					  : std::string();
+	return slash != std::string::npos ? path.substr(0, slash) : std::string();
 }
 
 /* libobs' obs_data JSON parser drops primitive array items, so the
  * "extract" string list is collected from the raw manifest text
  * (controlled, hand-written JSON). */
-std::vector<std::string> extractListForId(const std::string &json,
-					  const std::string &id)
+std::vector<std::string> extractListForId(const std::string &json, const std::string &id)
 {
 	std::vector<std::string> out;
 	size_t pos = json.find("\"id\": \"" + id + "\"");
@@ -126,12 +123,10 @@ std::vector<std::string> extractListForId(const std::string &json,
 	if (idBetween != std::string::npos && idBetween < ex)
 		return out;
 	size_t open = json.find('[', ex);
-	size_t close = open == std::string::npos ? std::string::npos
-						 : json.find(']', open);
+	size_t close = open == std::string::npos ? std::string::npos : json.find(']', open);
 	/* Bail if another entry starts before the array closes. */
 	size_t nextId = json.find("\"id\"", ex + 9);
-	if (close == std::string::npos ||
-	    (nextId != std::string::npos && nextId < close))
+	if (close == std::string::npos || (nextId != std::string::npos && nextId < close))
 		return out;
 	size_t p = open + 1;
 	while (p < close) {
@@ -198,8 +193,7 @@ struct cam_fx {
 	 * processor (shared_ptr like swapM: the capturing lambda must
 	 * outlive the bridge). When false the fs processor skips the
 	 * segmentation run and publishes a null-mask bundle. */
-	std::shared_ptr<std::atomic<bool>> bgActive =
-		std::make_shared<std::atomic<bool>>(true);
+	std::shared_ptr<std::atomic<bool>> bgActive = std::make_shared<std::atomic<bool>>(true);
 
 	/* 2-stage face-swap download chain (inswapper_128_fp16 ->
 	 * w600k_r50): fsId is the current stage ("" when idle). fsChainM
@@ -255,8 +249,7 @@ std::string modelCachePath(cam_fx *fx, const char *id, const char *fallback)
 
 std::string inswapperFp16CachePath(cam_fx *fx)
 {
-	return modelCachePath(fx, "inswapper_128_fp16",
-			      "inswapper_128_fp16.onnx");
+	return modelCachePath(fx, "inswapper_128_fp16", "inswapper_128_fp16.onnx");
 }
 
 std::string inswapperFp32CachePath(cam_fx *fx)
@@ -282,8 +275,7 @@ std::string arcfaceCachePath(cam_fx *fx)
 
 bool faceswapModelsPresent(cam_fx *fx)
 {
-	return (fileExists(inswapperFp16CachePath(fx)) ||
-		fileExists(inswapperFp32CachePath(fx))) &&
+	return (fileExists(inswapperFp16CachePath(fx)) || fileExists(inswapperFp32CachePath(fx))) &&
 	       fileExists(arcfaceCachePath(fx));
 }
 
@@ -358,8 +350,7 @@ void installProcessor(cam_fx *fx)
 				 * directly and tolerates the null mask. */
 				if (bg->load(std::memory_order_relaxed))
 					r.mask = seg->process(work);
-				r.frame = std::make_shared<const fx::Frame>(
-					std::move(work));
+				r.frame = std::make_shared<const fx::Frame>(std::move(work));
 				r.aiModified = aiModified;
 				return r;
 			});
@@ -378,30 +369,23 @@ void installProcessor(cam_fx *fx)
 bool buildAndSwap(cam_fx *fx, fx::SegTier tier)
 {
 	try {
-		auto p = std::make_shared<fx::SegmentationPipeline>(
-			tier, fx->litePath, fx->standardPath, fx->qualityPath,
-			fx->threads, /*tryCuda=*/true);
+		auto p = std::make_shared<fx::SegmentationPipeline>(tier, fx->litePath, fx->standardPath,
+								    fx->qualityPath, fx->threads, /*tryCuda=*/true);
 		p->setMaskParams(fx->params);
 		fx->pipeline = p;
 		fx->tierInEffect = (int)tier + 1;
 		static const char *names[] = {"lite", "standard", "quality"};
-		blog(LOG_INFO,
-		     "obs-cam-effects: pipeline tier in effect: %s (backend: %s)",
-		     names[(int)tier],
+		blog(LOG_INFO, "obs-cam-effects: pipeline tier in effect: %s (backend: %s)", names[(int)tier],
 		     fx::EpProbe::backendName(p->usesCuda()));
 		installProcessor(fx);
 		return true;
 	} catch (const std::exception &e) {
-		blog(LOG_WARNING,
-		     "obs-cam-effects: pipeline build failed (tier %d): %s",
-		     (int)tier, e.what());
+		blog(LOG_WARNING, "obs-cam-effects: pipeline build failed (tier %d): %s", (int)tier, e.what());
 		if (tier != fx::SegTier::Standard)
 			return buildAndSwap(fx, fx::SegTier::Standard);
 		return false;
 	} catch (...) {
-		blog(LOG_WARNING,
-		     "obs-cam-effects: pipeline build failed (tier %d)",
-		     (int)tier);
+		blog(LOG_WARNING, "obs-cam-effects: pipeline build failed (tier %d)", (int)tier);
 		if (tier != fx::SegTier::Standard)
 			return buildAndSwap(fx, fx::SegTier::Standard);
 		return false;
@@ -425,8 +409,7 @@ void parseManifest(cam_fx *fx)
 	obs_data_t *data = obs_data_create_from_json_file(path);
 	bfree(path);
 	if (!data) {
-		blog(LOG_WARNING,
-		     "obs-cam-effects: manifest.json failed to parse");
+		blog(LOG_WARNING, "obs-cam-effects: manifest.json failed to parse");
 		return;
 	}
 	obs_data_array_t *models = obs_data_get_array(data, "models");
@@ -452,8 +435,7 @@ void parseManifest(cam_fx *fx)
 		obs_data_array_release(models);
 	}
 	obs_data_release(data);
-	blog(LOG_INFO, "obs-cam-effects: manifest parsed, %zu entries",
-	     fx->manifest.size());
+	blog(LOG_INFO, "obs-cam-effects: manifest parsed, %zu entries", fx->manifest.size());
 }
 
 /* Starts a background download for the given manifest entry id.
@@ -489,13 +471,10 @@ int startDownloadById(cam_fx *fx, const char *id)
 		 * running process's mapped lib. */
 		std::string binDir = pluginBinDir();
 		if (binDir.empty()) {
-			blog(LOG_WARNING,
-			     "obs-cam-effects: provider download refused: plugin bin dir unknown");
+			blog(LOG_WARNING, "obs-cam-effects: provider download refused: plugin bin dir unknown");
 			return -1;
 		}
-		blog(LOG_INFO,
-		     "obs-cam-effects: provider extracts into plugin bin dir %s",
-		     binDir.c_str());
+		blog(LOG_INFO, "obs-cam-effects: provider extracts into plugin bin dir %s", binDir.c_str());
 		req.destPath = cacheDir("providers") + "/" + entry->id + ".tgz";
 		req.extractMembers = entry->extract;
 		req.extractDestDir = binDir;
@@ -509,8 +488,7 @@ int startDownloadById(cam_fx *fx, const char *id)
 	try {
 		fx->downloader->start(req);
 		fx->dlLastProvider = entry->kind == "provider";
-		blog(LOG_INFO, "obs-cam-effects: download started: %s",
-		     entry->id.c_str());
+		blog(LOG_INFO, "obs-cam-effects: download started: %s", entry->id.c_str());
 		return 0;
 	} catch (...) {
 		return -1;
@@ -541,8 +519,7 @@ void pumpFaceswapDownload(cam_fx *fx)
 	if (st != fx::models_dl::State::Done)
 		return;
 	if (stage == "inswapper_128_fp16") {
-		if (!fileExists(arcfaceCachePath(fx)) &&
-		    startDownloadById(fx, "w600k_r50") == 0) {
+		if (!fileExists(arcfaceCachePath(fx)) && startDownloadById(fx, "w600k_r50") == 0) {
 			std::lock_guard<std::mutex> lk(fx->fsChainM);
 			fx->fsId = "w600k_r50";
 			return;
@@ -567,8 +544,7 @@ void submitFrame(cam_fx_t *fx, const uint8_t *bgra, int w, int h, int linesize, 
 	frame->bypassFaceSwap = bypassFaceSwap;
 	frame->bgra.resize((size_t)w * h * 4);
 	for (int y = 0; y < h; y++)
-		std::memcpy(frame->bgra.data() + (size_t)y * w * 4,
-			    bgra + (size_t)y * linesize, (size_t)w * 4);
+		std::memcpy(frame->bgra.data() + (size_t)y * w * 4, bgra + (size_t)y * linesize, (size_t)w * 4);
 	fx->worker->submit(std::move(frame));
 }
 
@@ -576,8 +552,7 @@ void submitFrame(cam_fx_t *fx, const uint8_t *bgra, int w, int h, int linesize, 
 
 extern "C" {
 
-cam_fx_t *cam_fx_create(const char *lite_path, const char *standard_path,
-			const char *quality_path, int threads)
+cam_fx_t *cam_fx_create(const char *lite_path, const char *standard_path, const char *quality_path, int threads)
 {
 	try {
 		auto fx = std::make_unique<cam_fx>();
@@ -589,16 +564,14 @@ cam_fx_t *cam_fx_create(const char *lite_path, const char *standard_path,
 		os_mkdirs(cacheDir("models").c_str());
 		os_mkdirs(cacheDir("providers").c_str());
 		parseManifest(fx.get());
-		if (!buildAndSwap(fx.get(),
-				  resolveTier(0, fx->qualityPath)))
+		if (!buildAndSwap(fx.get(), resolveTier(0, fx->qualityPath)))
 			return nullptr;
 		std::shared_ptr<fx::SegmentationPipeline> p = fx->pipeline;
-		fx->worker = std::make_unique<fx::Worker>(
-			[p](const fx::Frame &f) {
-				fx::WorkerResult r;
-				r.mask = p->process(f);
-				return r;
-			});
+		fx->worker = std::make_unique<fx::Worker>([p](const fx::Frame &f) {
+			fx::WorkerResult r;
+			r.mask = p->process(f);
+			return r;
+		});
 		fx->worker->start();
 		return fx.release();
 	} catch (...) {
@@ -611,14 +584,12 @@ void cam_fx_destroy(cam_fx_t *fx)
 	delete fx;
 }
 
-void cam_fx_submit(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
-		   int linesize)
+void cam_fx_submit(cam_fx_t *fx, const uint8_t *bgra, int w, int h, int linesize)
 {
 	submitFrame(fx, bgra, w, h, linesize, true);
 }
 
-void cam_fx_submit_full(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
-			int linesize)
+void cam_fx_submit_full(cam_fx_t *fx, const uint8_t *bgra, int w, int h, int linesize)
 {
 	submitFrame(fx, bgra, w, h, linesize, false);
 }
@@ -776,9 +747,7 @@ int cam_fx_tier_in_effect(cam_fx_t *fx)
 
 int cam_fx_quality_available(cam_fx_t *fx)
 {
-	return (!fx->qualityPath.empty() && fileExists(fx->qualityPath))
-		       ? 1
-		       : 0;
+	return (!fx->qualityPath.empty() && fileExists(fx->qualityPath)) ? 1 : 0;
 }
 
 int cam_fx_gpu_build_present(cam_fx_t *fx)
@@ -796,8 +765,7 @@ int cam_fx_gpu_build_present(cam_fx_t *fx)
 		 * the provider download's extract list. */
 		std::string marker = "libonnxruntime_providers_cuda.so";
 		for (const auto &m : fx->manifest)
-			if (m.id == "ort_cuda_ep_1.28.0" &&
-			    m.kind == "provider" && !m.file.empty())
+			if (m.id == "ort_cuda_ep_1.28.0" && m.kind == "provider" && !m.file.empty())
 				marker = m.file;
 		return fileExists(binDir + "/" + marker) ? 1 : 0;
 	} catch (...) {
@@ -823,8 +791,7 @@ uint8_t *cam_fx_watermark_badge_rgba(int *w, int *h)
 	}
 }
 
-void cam_fx_set_mask_params(cam_fx_t *fx, float threshold, float contour,
-			    float feather, float beta)
+void cam_fx_set_mask_params(cam_fx_t *fx, float threshold, float contour, float feather, float beta)
 {
 	fx->params.threshold = threshold;
 	fx->params.contourFrac = contour;
@@ -841,8 +808,7 @@ int cam_fx_start_download(cam_fx_t *fx, const char *id)
 	return startDownloadById(fx, id);
 }
 
-int cam_fx_download_state(cam_fx_t *fx, char *buf, int buf_len,
-			  double *progress)
+int cam_fx_download_state(cam_fx_t *fx, char *buf, int buf_len, double *progress)
 {
 	if (!fx)
 		return -1;
@@ -854,12 +820,9 @@ int cam_fx_download_state(cam_fx_t *fx, char *buf, int buf_len,
 		fx::models_dl::State st = fx->downloader->state();
 		/* The provider payload (GPU ORT build) only takes effect
 		 * on the next process start — say so explicitly. */
-		const bool providerDone =
-			st == fx::models_dl::State::Done && fx->dlLastProvider;
+		const bool providerDone = st == fx::models_dl::State::Done && fx->dlLastProvider;
 		snprintf(buf, (size_t)buf_len, "%s",
-			 providerDone
-				 ? "done — restart OBS to enable GPU acceleration"
-				 : fx::models_dl::stateName(st));
+			 providerDone ? "done — restart OBS to enable GPU acceleration" : fx::models_dl::stateName(st));
 	}
 	if (progress)
 		*progress = fx->downloader->progress();
@@ -871,8 +834,7 @@ int cam_fx_download_error(cam_fx_t *fx, char *buf, int buf_len)
 	if (!fx)
 		return -1;
 	if (buf && buf_len > 0)
-		snprintf(buf, (size_t)buf_len, "%s",
-			 fx->downloader->error().c_str());
+		snprintf(buf, (size_t)buf_len, "%s", fx->downloader->error().c_str());
 	return 0;
 }
 
@@ -883,8 +845,7 @@ int cam_fx_notice(cam_fx_t *fx, const char *id, char *buf, int buf_len)
 	for (const auto &m : fx->manifest) {
 		if (m.id == id) {
 			if (buf && buf_len > 0)
-				snprintf(buf, (size_t)buf_len, "%s",
-					 m.notice.c_str());
+				snprintf(buf, (size_t)buf_len, "%s", m.notice.c_str());
 			return 0;
 		}
 	}
@@ -904,8 +865,7 @@ int cam_fx_backend(cam_fx_t *fx, char *buf, int buf_len)
 		return -1;
 	if (buf && buf_len > 0)
 		snprintf(buf, (size_t)buf_len, "%s",
-			 fx::EpProbe::backendName(fx->pipeline &&
-						  fx->pipeline->usesCuda()));
+			 fx::EpProbe::backendName(fx->pipeline && fx->pipeline->usesCuda()));
 	return 0;
 }
 
@@ -968,10 +928,7 @@ int cam_fx_faceswap_available(cam_fx_t *fx)
 		return 0;
 	try {
 		pumpFaceswapDownload(fx);
-		return faceswapModelsPresent(fx) &&
-			       fx::EpProbe::cudaAvailable()
-			       ? 1
-			       : 0;
+		return faceswapModelsPresent(fx) && fx::EpProbe::cudaAvailable() ? 1 : 0;
 	} catch (...) {
 		return 0;
 	}
@@ -1055,8 +1012,7 @@ void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled)
 				/* Missing source is fine: process() no-swaps until one is
 				 * set (hasSource). */
 				if (!fx->pendingLatent.empty())
-					swap->setSourceEmbedding(
-						fx->pendingLatent);
+					swap->setSourceEmbedding(fx->pendingLatent);
 				fx->swapPipeline = std::move(swap);
 			}
 			blog(LOG_INFO, "obs-cam-effects: face swap pipeline built");
@@ -1077,8 +1033,7 @@ void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled)
 			throw;
 		}
 	} catch (const std::exception &e) {
-		blog(LOG_WARNING,
-		     "obs-cam-effects: face swap enable failed: %s", e.what());
+		blog(LOG_WARNING, "obs-cam-effects: face swap enable failed: %s", e.what());
 	} catch (...) {
 		blog(LOG_WARNING, "obs-cam-effects: face swap enable failed");
 	}
@@ -1154,8 +1109,7 @@ void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity, float sharpness, 
 	}
 }
 
-int cam_fx_try_get_frame(cam_fx_t *fx, const uint8_t **bgra, int *w, int *h,
-			 uint64_t *seq)
+int cam_fx_try_get_frame(cam_fx_t *fx, const uint8_t **bgra, int *w, int *h, uint64_t *seq)
 {
 	if (bgra)
 		*bgra = nullptr;
@@ -1183,8 +1137,7 @@ int cam_fx_start_faceswap_download(cam_fx_t *fx)
 		return -1;
 	try {
 		fx::models_dl::State st = fx->downloader->state();
-		if (st == fx::models_dl::State::Downloading ||
-		    st == fx::models_dl::State::Verifying ||
+		if (st == fx::models_dl::State::Downloading || st == fx::models_dl::State::Verifying ||
 		    st == fx::models_dl::State::Extracting)
 			return -1; // another download is running
 		{
@@ -1194,8 +1147,7 @@ int cam_fx_start_faceswap_download(cam_fx_t *fx)
 		}
 		/* No usable inswapper (neither fp16 nor fp32): fetch the
 		 * fp16 default. */
-		if (!fileExists(inswapperFp16CachePath(fx)) &&
-		    !fileExists(inswapperFp32CachePath(fx))) {
+		if (!fileExists(inswapperFp16CachePath(fx)) && !fileExists(inswapperFp32CachePath(fx))) {
 			if (startDownloadById(fx, "inswapper_128_fp16") != 0)
 				return -1;
 			std::lock_guard<std::mutex> lk(fx->fsChainM);
@@ -1217,8 +1169,7 @@ int cam_fx_start_faceswap_download(cam_fx_t *fx)
 	}
 }
 
-int cam_fx_faceswap_download_state(cam_fx_t *fx, char *id_buf, int id_len,
-				   char *state_buf, int state_len,
+int cam_fx_faceswap_download_state(cam_fx_t *fx, char *id_buf, int id_len, char *state_buf, int state_len,
 				   double *progress)
 {
 	if (!fx)
@@ -1235,8 +1186,7 @@ int cam_fx_faceswap_download_state(cam_fx_t *fx, char *id_buf, int id_len,
 	if (id_buf && id_len > 0)
 		snprintf(id_buf, (size_t)id_len, "%s", stage.c_str());
 	if (state_buf && state_len > 0)
-		snprintf(state_buf, (size_t)state_len, "%s",
-			 fx::models_dl::stateName(fx->downloader->state()));
+		snprintf(state_buf, (size_t)state_len, "%s", fx::models_dl::stateName(fx->downloader->state()));
 	if (progress)
 		*progress = fx->downloader->progress();
 	return 0;

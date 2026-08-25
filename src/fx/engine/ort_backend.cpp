@@ -43,11 +43,9 @@ Ort::SessionOptions makeSessionOptions(int intraOpThreads, bool cuda, OrtExecuti
 		 * with the bundled CPU build (same SONAME). */
 		using AppendCudaFn = OrtStatusPtr (*)(OrtSessionOptions *, int);
 		static AppendCudaFn appendCuda = reinterpret_cast<AppendCudaFn>(
-			dlsym(RTLD_DEFAULT,
-			      "OrtSessionOptionsAppendExecutionProvider_CUDA"));
+			dlsym(RTLD_DEFAULT, "OrtSessionOptionsAppendExecutionProvider_CUDA"));
 		if (!appendCuda)
-			throw std::runtime_error(
-				"fx: classic CUDA API unavailable");
+			throw std::runtime_error("fx: classic CUDA API unavailable");
 		OrtStatusPtr st = appendCuda(opts, 0);
 		Ort::ThrowOnError(st);
 	}
@@ -136,18 +134,14 @@ OrtModel::OrtModel(const std::string &modelPath, int intraOpThreads, bool tryCud
 		auto name = session_.GetInputNameAllocated(i, alloc);
 		TensorDesc d;
 		d.name = name.get();
-		d.shape = session_.GetInputTypeInfo(i)
-				  .GetTensorTypeAndShapeInfo()
-				  .GetShape();
+		d.shape = session_.GetInputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape();
 		inputs_.push_back(std::move(d));
 	}
 	for (size_t i = 0; i < session_.GetOutputCount(); i++) {
 		auto name = session_.GetOutputNameAllocated(i, alloc);
 		TensorDesc d;
 		d.name = name.get();
-		d.shape = session_.GetOutputTypeInfo(i)
-				  .GetTensorTypeAndShapeInfo()
-				  .GetShape();
+		d.shape = session_.GetOutputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape();
 		outputs_.push_back(std::move(d));
 	}
 }
@@ -160,27 +154,23 @@ OrtModel::OrtModel(const std::string &modelPath, int intraOpThreads, bool tryCud
 	return n;
 }
 
-std::vector<std::vector<float>>
-OrtModel::runImpl(const std::vector<std::vector<float>> &inputData,
-		  const std::vector<std::vector<int64_t>> *overrides)
+std::vector<std::vector<float>> OrtModel::runImpl(const std::vector<std::vector<float>> &inputData,
+						  const std::vector<std::vector<int64_t>> *overrides)
 {
 	if (backend() == OrtBackend::Failed)
 		throw std::runtime_error("fx: CUDA execution failed");
 	if (inputData.size() != inputs_.size())
 		throw std::runtime_error("fx: input tensor count mismatch");
 
-	auto mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator,
-					      OrtMemTypeDefault);
+	auto mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 	std::vector<Ort::Value> inTensors;
 	std::vector<const char *> inNames;
 	inTensors.reserve(inputs_.size());
 	for (size_t i = 0; i < inputs_.size(); i++) {
-		const std::vector<int64_t> &shape =
-			(overrides && !(*overrides)[i].empty()) ? (*overrides)[i]
-							      : inputs_[i].shape;
-		inTensors.push_back(Ort::Value::CreateTensor<float>(
-			mem, const_cast<float *>(inputData[i].data()),
-			inputData[i].size(), shape.data(), shape.size()));
+		const std::vector<int64_t> &shape = (overrides && !(*overrides)[i].empty()) ? (*overrides)[i]
+											    : inputs_[i].shape;
+		inTensors.push_back(Ort::Value::CreateTensor<float>(mem, const_cast<float *>(inputData[i].data()),
+								    inputData[i].size(), shape.data(), shape.size()));
 		inNames.push_back(inputs_[i].name.c_str());
 	}
 	std::vector<const char *> outNames;
@@ -200,11 +190,8 @@ OrtModel::runImpl(const std::vector<std::vector<float>> &inputData,
 	return result;
 }
 
-std::vector<Ort::Value>
-OrtModel::tryRun(std::vector<Ort::Value> &inTensors,
-		 std::vector<const char *> &inNames,
-		 std::vector<const char *> &outNames,
-		 Ort::MemoryInfo &cpuMem)
+std::vector<Ort::Value> OrtModel::tryRun(std::vector<Ort::Value> &inTensors, std::vector<const char *> &inNames,
+					 std::vector<const char *> &outNames, Ort::MemoryInfo &cpuMem)
 {
 	if (backend() == OrtBackend::Failed)
 		throw std::runtime_error("fx: CUDA execution failed");
@@ -245,15 +232,13 @@ OrtModel::tryRun(std::vector<Ort::Value> &inTensors,
 	}
 }
 
-std::vector<std::vector<float>>
-OrtModel::run(const std::vector<std::vector<float>> &inputData)
+std::vector<std::vector<float>> OrtModel::run(const std::vector<std::vector<float>> &inputData)
 {
 	return runImpl(inputData, nullptr);
 }
 
-std::vector<std::vector<float>> OrtModel::runWithShapes(
-	const std::vector<std::vector<float>> &inputData,
-	const std::vector<std::vector<int64_t>> &overrides)
+std::vector<std::vector<float>> OrtModel::runWithShapes(const std::vector<std::vector<float>> &inputData,
+							const std::vector<std::vector<int64_t>> &overrides)
 {
 	if (overrides.size() != inputs_.size())
 		throw std::runtime_error("fx: shape override count mismatch");

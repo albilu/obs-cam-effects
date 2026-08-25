@@ -21,23 +21,20 @@ enum cam_fx_result_flags {
  * path of the runtime-downloaded quality model (may not exist yet;
  * Quality tier construction is deferred until the file appears).
  * Returns NULL on failure. */
-cam_fx_t *cam_fx_create(const char *lite_path, const char *standard_path,
-			const char *quality_path, int threads);
+cam_fx_t *cam_fx_create(const char *lite_path, const char *standard_path, const char *quality_path, int threads);
 
 void cam_fx_destroy(cam_fx_t *fx);
 
 /* Submits a packed BGRA frame for segmentation-only processing (any size;
  * copied internally). Never blocks. */
-void cam_fx_submit(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
-		   int linesize);
+void cam_fx_submit(cam_fx_t *fx, const uint8_t *bgra, int w, int h, int linesize);
 
 /* Submits a packed BGRA frame at the target's full resolution for the
  * face-swap dataflow: the worker runs swap -> segmentation on it and
  * publishes frame+mask. Same non-blocking semantics as cam_fx_submit.
  * Use exactly one of the two per render tick (full-res when face swap is
  * active and in-cap, the segmentation-only stage otherwise — never both). */
-void cam_fx_submit_full(cam_fx_t *fx, const uint8_t *bgra, int w, int h,
-			int linesize);
+void cam_fx_submit_full(cam_fx_t *fx, const uint8_t *bgra, int w, int h, int linesize);
 
 /* Fetches validated mask/frame components from exactly one latest-worker
  * snapshot and returns their CAM_FX_RESULT_* bitmask. All output slots are
@@ -59,8 +56,7 @@ int cam_fx_try_get_result(cam_fx_t *fx, const uint8_t **mask, int *mask_w, int *
  * On success *px points to an internal w*h uint8 buffer valid until the
  * next result/mask/frame retrieval call, and *seq is the shared result
  * sequence number. */
-int cam_fx_try_get_mask(cam_fx_t *fx, const uint8_t **px, int *w, int *h,
-			uint64_t *seq);
+int cam_fx_try_get_mask(cam_fx_t *fx, const uint8_t **px, int *w, int *h, uint64_t *seq);
 
 /* 1 if the latest successful Worker result was published within max_age_ms,
  * else 0. This freshness is not mask-specific. */
@@ -93,8 +89,7 @@ int cam_fx_gpu_build_present(cam_fx_t *fx);
 uint8_t *cam_fx_watermark_badge_rgba(int *w, int *h);
 
 /* Advanced mask params (see fx::MaskParams). */
-void cam_fx_set_mask_params(cam_fx_t *fx, float threshold, float contour,
-			    float feather, float beta);
+void cam_fx_set_mask_params(cam_fx_t *fx, float threshold, float contour, float feather, float beta);
 
 /* Starts a background download for the given manifest entry id
  * ("rvm_mobilenetv3_fp32" or "ort_cuda_ep_1.28.0"). Returns 0 on start,
@@ -103,8 +98,7 @@ int cam_fx_start_download(cam_fx_t *fx, const char *id);
 
 /* Download status: state string via buf (one of idle/downloading/
  * verifying/extracting/done/error), progress 0..1 or -1. Returns 0. */
-int cam_fx_download_state(cam_fx_t *fx, char *buf, int buf_len,
-			  double *progress);
+int cam_fx_download_state(cam_fx_t *fx, char *buf, int buf_len, double *progress);
 
 /* Download error text (empty unless state == error). Returns 0. */
 int cam_fx_download_error(cam_fx_t *fx, char *buf, int buf_len);
@@ -192,8 +186,7 @@ void cam_fx_faceswap_set_params(cam_fx_t *fx, float intensity, float sharpness, 
  * cam_fx_try_get_result for CAM_FX_RESULT_AI. On success *bgra points to an
  * internal w*h*4 uint8 buffer valid until the next result/mask/frame retrieval
  * call, and *seq is the result sequence number (shared with the mask). */
-int cam_fx_try_get_frame(cam_fx_t *fx, const uint8_t **bgra, int *w,
-			 int *h, uint64_t *seq);
+int cam_fx_try_get_frame(cam_fx_t *fx, const uint8_t **bgra, int *w, int *h, uint64_t *seq);
 
 /* Starts the 2-stage face-swap download (inswapper_128_fp16, then
  * w600k_r50); stages whose file already exists are skipped (an existing
@@ -205,8 +198,7 @@ int cam_fx_start_faceswap_download(cam_fx_t *fx);
  * chain is idle), state string via state_buf (one of idle/downloading/
  * verifying/extracting/done/error), progress 0..1 or -1. Advances the
  * stage chain. Returns 0. */
-int cam_fx_faceswap_download_state(cam_fx_t *fx, char *id_buf, int id_len,
-				   char *state_buf, int state_len,
+int cam_fx_faceswap_download_state(cam_fx_t *fx, char *id_buf, int id_len, char *state_buf, int state_len,
 				   double *progress);
 
 #ifdef __cplusplus

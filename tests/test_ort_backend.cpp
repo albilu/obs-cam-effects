@@ -48,8 +48,7 @@ TEST(OrtBackendState, CpuReplacementFailurePublishesFailed)
 
 TEST(OrtModel, ThrowsOnMissingFile)
 {
-	EXPECT_THROW(fx::OrtModel model("/nonexistent/model.onnx", 1),
-		     std::exception);
+	EXPECT_THROW(fx::OrtModel model("/nonexistent/model.onnx", 1), std::exception);
 }
 
 TEST(OrtModel, RequireCudaWithoutCudaRequestThrowsDeterministically)
@@ -70,7 +69,7 @@ TEST(OrtModel, ExposesMultiIoInterface)
 	ASSERT_EQ(model.inputCount(), 1u);
 	ASSERT_EQ(model.outputCount(), 1u);
 	ASSERT_EQ(model.input(0).shape.size(), 4u);
-	ASSERT_EQ(model.input(0).shape[1], 3);	 // NCHW
+	ASSERT_EQ(model.input(0).shape[1], 3); // NCHW
 	ASSERT_EQ(model.input(0).shape[2], 192);
-	ASSERT_EQ(model.output(0).shape[3], 2);	 // 2 classes
+	ASSERT_EQ(model.output(0).shape[3], 2); // 2 classes
 }

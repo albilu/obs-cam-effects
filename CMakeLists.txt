@@ -45,7 +45,7 @@ if(NOT EXISTS "${ORT_ROOT}/lib/libonnxruntime.so.${ORT_VERSION}")
   file(
     DOWNLOAD
       "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
-    ${CMAKE_BINARY_DIR}/ort-${ORT_VERSION}.tgz
+      ${CMAKE_BINARY_DIR}/ort-${ORT_VERSION}.tgz
     EXPECTED_HASH SHA256=a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407
     SHOW_PROGRESS
   )
@@ -63,15 +63,18 @@ set_target_properties(
 
 # --- Bundled segmentation model: PP-HumanSeg v2 lite (Apache-2.0) ---
 set(FX_MODEL_DIR ${CMAKE_BINARY_DIR}/models)
+set(OBS_BACKGROUNDREMOVAL_REV 9772c540279cc84b8c5be5442c50ccb00b399a6e)
 if(NOT EXISTS "${FX_MODEL_DIR}/pphumanseg_fp32.onnx")
   file(
-    DOWNLOAD "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/pphumanseg_fp32.onnx"
-    ${FX_MODEL_DIR}/pphumanseg_fp32.onnx
+    DOWNLOAD
+      "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/${OBS_BACKGROUNDREMOVAL_REV}/data/models/pphumanseg_fp32.onnx"
+      ${FX_MODEL_DIR}/pphumanseg_fp32.onnx
     EXPECTED_HASH SHA256=6913acd125be55fd08e76072ed464146925223392954c437f3aa700e4da84b17
   )
   file(
-    DOWNLOAD "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/pphumanseg_fp32.onnx.license"
-    ${FX_MODEL_DIR}/pphumanseg_fp32.onnx.license
+    DOWNLOAD
+      "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/${OBS_BACKGROUNDREMOVAL_REV}/data/models/pphumanseg_fp32.onnx.license"
+      ${FX_MODEL_DIR}/pphumanseg_fp32.onnx.license
     EXPECTED_HASH SHA256=363552428d64011b9242e0889f90e06cf2c30370908a2a9641dbdd8d37a5f2a6
   )
 endif()
@@ -79,14 +82,16 @@ endif()
 # --- Bundled segmentation model: MediaPipe Selfie Seg (Apache-2.0, Lite tier) ---
 if(NOT EXISTS "${FX_MODEL_DIR}/selfie_segmentation.onnx")
   file(
-    DOWNLOAD "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/selfie_segmentation.onnx"
-    ${FX_MODEL_DIR}/selfie_segmentation.onnx
+    DOWNLOAD
+      "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/${OBS_BACKGROUNDREMOVAL_REV}/data/models/selfie_segmentation.onnx"
+      ${FX_MODEL_DIR}/selfie_segmentation.onnx
     EXPECTED_HASH SHA256=1511ab5564cb0ae179cba9bcad6ad931003ccc71656f11fd270967023678c6a5
   )
   file(
     DOWNLOAD
-      "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/main/models/selfie_segmentation.onnx.license"
-    ${FX_MODEL_DIR}/selfie_segmentation.onnx.license
+      "https://raw.githubusercontent.com/royshil/obs-backgroundremoval/${OBS_BACKGROUNDREMOVAL_REV}/data/models/selfie_segmentation.onnx.license"
+      ${FX_MODEL_DIR}/selfie_segmentation.onnx.license
+    EXPECTED_HASH SHA256=34eb05a56005ba9df3da306af94eaac35000f705f02e2881eba3eba913d14dde
   )
 endif()
 
@@ -101,7 +106,7 @@ if(NOT EXISTS "${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx")
   file(
     DOWNLOAD
       "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
-    ${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx
+      ${FX_MODEL_DIR}/face_detection_yunet_2023mar.onnx
     EXPECTED_HASH SHA256=8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4
   )
 endif()

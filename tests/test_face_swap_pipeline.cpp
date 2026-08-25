@@ -222,8 +222,7 @@ TEST(FaceSwapPipeline, DetectEveryNBlankFrames)
 	f.height = 240;
 	f.bgra.assign(320u * 240u * 4u, 128);
 	for (int i = 0; i < 8; i++)
-		ASSERT_FALSE(pipe.process(f))
-			<< "blank frame " << i << " must not swap";
+		ASSERT_FALSE(pipe.process(f)) << "blank frame " << i << " must not swap";
 }
 
 /* Decimation must NOT skip the swap itself: with detectEveryN=2 the
@@ -234,8 +233,7 @@ TEST(FaceSwapPipeline, DetectEveryNStillSwapsEveryFrame)
 		GTEST_SKIP() << "runtime models not downloaded";
 	int w = 0, h = 0, channels = 0;
 	stbi_uc *rgb = stbi_load(FX_FIXTURE_FACE_PATH, &w, &h, &channels, 3);
-	ASSERT_TRUE(rgb != nullptr) << "fixture missing: "
-				    << FX_FIXTURE_FACE_PATH;
+	ASSERT_TRUE(rgb != nullptr) << "fixture missing: " << FX_FIXTURE_FACE_PATH;
 	fx::Frame f;
 	f.width = w;
 	f.height = h;
@@ -260,8 +258,7 @@ TEST(FaceSwapPipeline, DetectEveryNStillSwapsEveryFrame)
 	 * detects again. All four must swap. */
 	for (int i = 0; i < 4; i++) {
 		fx::Frame work = f;
-		ASSERT_TRUE(pipe.process(work))
-			<< "frame " << i << " must be swapped";
+		ASSERT_TRUE(pipe.process(work)) << "frame " << i << " must be swapped";
 	}
 }
 
@@ -377,8 +374,7 @@ TEST(FaceSwapPipeline, NoBleedOutsideFaceRegion)
 	/* Committed PD fixture (see tests/data/README.txt). */
 	int w = 0, h = 0, channels = 0;
 	stbi_uc *rgb = stbi_load(FX_FIXTURE_FACE_PATH, &w, &h, &channels, 3);
-	ASSERT_TRUE(rgb != nullptr) << "fixture missing: "
-				    << FX_FIXTURE_FACE_PATH;
+	ASSERT_TRUE(rgb != nullptr) << "fixture missing: " << FX_FIXTURE_FACE_PATH;
 	fx::Frame f;
 	f.width = w;
 	f.height = h;
@@ -394,8 +390,7 @@ TEST(FaceSwapPipeline, NoBleedOutsideFaceRegion)
 	/* Largest detection box, padded 2x about its center. */
 	fx::YuNet det(FX_YUNET_MODEL_PATH, 1);
 	auto faces = det.detect(f);
-	ASSERT_FALSE(faces.empty())
-		<< "fixture must contain a detectable face";
+	ASSERT_FALSE(faces.empty()) << "fixture must contain a detectable face";
 	const fx::FaceBox *best = &faces[0];
 	for (const auto &b : faces)
 		if (b.w * b.h > best->w * best->h)
@@ -429,6 +424,5 @@ TEST(FaceSwapPipeline, NoBleedOutsideFaceRegion)
 			}
 		}
 	}
-	ASSERT_EQ(changed, 0u)
-		<< "outside-region pixels changed, first at byte " << firstByte;
+	ASSERT_EQ(changed, 0u) << "outside-region pixels changed, first at byte " << firstByte;
 }

@@ -13,8 +13,8 @@
 namespace fx {
 
 struct FaceSwapParams {
-	float intensity = 1.0f;   // 0..1 swap opacity (amendment 9)
-	float sharpness = 0.0f;   // 0..1 unsharp amount (amendment 9)
+	float intensity = 1.0f;     // 0..1 swap opacity (amendment 9)
+	float sharpness = 0.0f;     // 0..1 unsharp amount (amendment 9)
 	float mouthPreserve = 0.0f; // 0..1 mouth-restore strength (amendment 9)
 	float bboxEma = 0.7f;       // detection smoothing
 	int detectEveryN = 2;       // YuNet every Nth frame (<=1: every frame)
@@ -51,10 +51,10 @@ private:
 	FaceSwapParams params_;
 
 	FaceTracker tracker_;
-	std::vector<uint8_t> aimg_;       // 128x128x3 aligned crop
-	std::vector<uint8_t> fake128_;    // swap output crop
-	std::vector<uint8_t> mask128_;    // fixed paste-back mask
-	std::vector<uint8_t> origFrame_;  // for mouth restore
+	std::vector<uint8_t> aimg_;      // 128x128x3 aligned crop
+	std::vector<uint8_t> fake128_;   // swap output crop
+	std::vector<uint8_t> mask128_;   // fixed paste-back mask
+	std::vector<uint8_t> origFrame_; // for mouth restore
 };
 
 } // namespace fx

@@ -10,7 +10,7 @@
 namespace fx {
 
 struct FaceBox {
-	float x, y, w, h; // top-left + size, in input-frame pixels
+	float x, y, w, h;     // top-left + size, in input-frame pixels
 	Landmarks5 landmarks; // re, le, nose, rcm, lcm
 	float score;
 };
@@ -18,8 +18,7 @@ struct FaceBox {
 /* YuNet 2023mar face detector (640x640, BGR, no normalization). */
 class YuNet {
 public:
-	explicit YuNet(const std::string &modelPath, int threads = 2,
-		       bool tryCuda = false);
+	explicit YuNet(const std::string &modelPath, int threads = 2, bool tryCuda = false);
 
 	/* Detects faces in a BGRA frame of any size (resized to 640x640
 	 * internally; coordinates mapped back to frame pixels). Returns

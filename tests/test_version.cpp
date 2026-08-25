@@ -4,5 +4,5 @@
 
 TEST(FxVersion, ReturnsCurrentVersion)
 {
-	EXPECT_STREQ(fx::version(), "0.1.0");
+	EXPECT_STREQ(fx::version(), "0.2.0");
 }

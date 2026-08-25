@@ -13,7 +13,7 @@ namespace fx {
 
 namespace {
 
-constexpr int kCrop = 128;  // inswapper aligned crop size
+constexpr int kCrop = 128;   // inswapper aligned crop size
 constexpr int kLatent = 512; // inswapper source latent dims
 
 } // namespace
@@ -30,10 +30,8 @@ FaceSwapPipeline::FaceSwapPipeline(const std::string &yunetPath, const std::stri
 	const auto &in0 = swapper_.input(0).shape;
 	const auto &in1 = swapper_.input(1).shape;
 	const auto &out0 = swapper_.output(0).shape;
-	if (in0.size() != 4 || in0[1] != 3 || in0[2] != kCrop ||
-	    in0[3] != kCrop || in1.size() != 2 || in1[1] != kLatent ||
-	    out0.size() != 4 || out0[1] != 3 || out0[2] != kCrop ||
-	    out0[3] != kCrop)
+	if (in0.size() != 4 || in0[1] != 3 || in0[2] != kCrop || in0[3] != kCrop || in1.size() != 2 ||
+	    in1[1] != kLatent || out0.size() != 4 || out0[1] != 3 || out0[2] != kCrop || out0[3] != kCrop)
 		throw std::runtime_error("fx: unexpected inswapper IO shape");
 
 	const std::vector<float> mask = ellipseMask(kCrop, 0.35f, 0.45f, 12);
@@ -79,30 +77,22 @@ bool FaceSwapPipeline::process(Frame &frame)
 	aimg_.resize((size_t)kCrop * kCrop * 3);
 	{
 		std::vector<uint8_t> aimg4((size_t)kCrop * kCrop * 4);
-		warpAffineBilinear(frame.bgra.data(), w, h, 4, m, aimg4.data(),
-				   kCrop, kCrop);
+		warpAffineBilinear(frame.bgra.data(), w, h, 4, m, aimg4.data(), kCrop, kCrop);
 		for (int i = 0; i < kCrop * kCrop; i++)
-			memcpy(aimg_.data() + (size_t)i * 3,
-			       aimg4.data() + (size_t)i * 4, 3);
+			memcpy(aimg_.data() + (size_t)i * 3, aimg4.data() + (size_t)i * 4, 3);
 	}
 
 	/* inswapper: target = crop RGB /255 in [0,1] NCHW, source = latent. */
 	std::vector<float> tensor((size_t)3 * kCrop * kCrop);
 	for (int y = 0; y < kCrop; y++) {
 		for (int x = 0; x < kCrop; x++) {
-			const uint8_t *p =
-				aimg_.data() + ((size_t)y * kCrop + x) * 3;
+			const uint8_t *p = aimg_.data() + ((size_t)y * kCrop + x) * 3;
 			for (int c = 0; c < 3; c++)
-				tensor[(size_t)c * kCrop * kCrop +
-				       (size_t)y * kCrop + x] =
-					(float)p[2 - c] / 255.0f;
+				tensor[(size_t)c * kCrop * kCrop + (size_t)y * kCrop + x] = (float)p[2 - c] / 255.0f;
 		}
 	}
 	const std::vector<float> out =
-		swapper_
-			.runWithShapes({tensor, sourceLatent_},
-				       {{1, 3, kCrop, kCrop}, {1, kLatent}})
-			.at(0);
+		swapper_.runWithShapes({tensor, sourceLatent_}, {{1, 3, kCrop, kCrop}, {1, kLatent}}).at(0);
 	if (out.size() != (size_t)3 * kCrop * kCrop)
 		throw std::runtime_error("fx: unexpected inswapper output size");
 
@@ -110,22 +100,16 @@ bool FaceSwapPipeline::process(Frame &frame)
 	fake128_.resize((size_t)kCrop * kCrop * 3);
 	for (int y = 0; y < kCrop; y++) {
 		for (int x = 0; x < kCrop; x++) {
-			uint8_t *d =
-				fake128_.data() + ((size_t)y * kCrop + x) * 3;
+			uint8_t *d = fake128_.data() + ((size_t)y * kCrop + x) * 3;
 			for (int c = 0; c < 3; c++) {
-				const float v =
-					out[(size_t)(2 - c) * kCrop * kCrop +
-					    (size_t)y * kCrop + x] *
-					255.0f;
-				d[c] = (uint8_t)std::clamp((int)std::lround(v),
-							   0, 255);
+				const float v = out[(size_t)(2 - c) * kCrop * kCrop + (size_t)y * kCrop + x] * 255.0f;
+				d[c] = (uint8_t)std::clamp((int)std::lround(v), 0, 255);
 			}
 		}
 	}
 
 	if (params_.sharpness > 0.0f)
-		unsharpMask(fake128_.data(), kCrop, kCrop, 3, 2,
-			    params_.sharpness);
+		unsharpMask(fake128_.data(), kCrop, kCrop, 3, 2, params_.sharpness);
 
 	const bool preserveMouth = params_.mouthPreserve > 0.0f;
 	if (preserveMouth)

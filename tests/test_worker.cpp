@@ -303,8 +303,7 @@ TEST(Worker, PublishesFrameAndMaskBundle)
 
 TEST(SegmentationPipeline, EndToEndWithRealModel)
 {
-	fx::SegmentationPipeline pipe(fx::SegTier::Standard, "",
-				      FX_MODEL_PATH, "", 1);
+	fx::SegmentationPipeline pipe(fx::SegTier::Standard, "", FX_MODEL_PATH, "", 1);
 	fx::Frame f;
 	f.width = 320;
 	f.height = 240;

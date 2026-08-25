@@ -97,9 +97,7 @@ void Worker::loop()
 		uint64_t epoch;
 		{
 			std::unique_lock<std::mutex> lk(inM_);
-			inCv_.wait(lk, [this] {
-				return pending_ != nullptr || !running_.load();
-			});
+			inCv_.wait(lk, [this] { return pending_ != nullptr || !running_.load(); });
 			if (!running_.load())
 				break;
 			frame = std::move(pending_);
