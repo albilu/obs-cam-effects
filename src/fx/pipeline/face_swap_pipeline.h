@@ -16,8 +16,11 @@ struct FaceSwapParams {
 	float intensity = 1.0f;     // 0..1 swap opacity (amendment 9)
 	float sharpness = 0.0f;     // 0..1 unsharp amount (amendment 9)
 	float mouthPreserve = 0.0f; // 0..1 mouth-restore strength (amendment 9)
-	float bboxEma = 0.7f;       // detection smoothing
-	int detectEveryN = 2;       // YuNet every Nth frame (<=1: every frame)
+	/* Defaults mirror deep-live-cam: raw per-detection landmarks
+	 * (0.7 EMA made the aligned crop lag ~2 detections behind the
+	 * face and ghost during motion) and detection on every frame. */
+	float bboxEma = 0.0f; // detection smoothing (0 = raw landmarks)
+	int detectEveryN = 1; // YuNet every Nth frame (<=1: every frame)
 };
 
 /* YuNet detect (bbox EMA) -> umeyama align -> inswapper -> paste-back
