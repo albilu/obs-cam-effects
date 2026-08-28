@@ -181,6 +181,10 @@ struct cam_fx {
 	/* Terminal CUDA failure notification for the render thread. Shared lifetime
 	 * is required because a dequeued worker processor can outlive cam_fx. */
 	std::shared_ptr<std::atomic<bool>> faceswapFailed = std::make_shared<std::atomic<bool>>(false);
+	/* One-shot guard: the first per-frame swap exception is logged to the OBS
+	 * log; repeat failures stay silent (they would otherwise spam at camera
+	 * rate). Reset on every face-swap enable/pipeline rebuild. */
+	std::shared_ptr<std::atomic<bool>> swapErrorLogged = std::make_shared<std::atomic<bool>>(false);
 	std::unique_ptr<fx::FaceEmbedder> embedder; // lazy, cached
 	std::unique_ptr<fx::YuNet> embedDetector;   // lazy, cached
 	fx::FaceSwapParams swapParams;
@@ -321,8 +325,9 @@ void installProcessor(cam_fx *fx)
 	if (swap) {
 		std::shared_ptr<std::atomic<bool>> bg = fx->bgActive;
 		std::shared_ptr<std::atomic<bool>> failed = fx->faceswapFailed;
+		std::shared_ptr<std::atomic<bool>> errLogged = fx->swapErrorLogged;
 		fx->worker->setProcessor(
-			[seg, swap, m, bg, generation, failed, capturedGeneration](const fx::Frame &frame) {
+			[seg, swap, m, bg, generation, failed, errLogged, capturedGeneration](const fx::Frame &frame) {
 				if (frame.bypassFaceSwap) {
 					fx::WorkerResult r;
 					r.mask = seg->process(frame);
@@ -336,9 +341,22 @@ void installProcessor(cam_fx *fx)
 						throw std::runtime_error("fx: stale face-swap processor");
 					try {
 						aiModified = swap->process(work);
+					} catch (const std::exception &e) {
+						if (swap->hasFailedBackend())
+							failed->store(true, std::memory_order_release);
+						bool expected = false;
+						if (errLogged->compare_exchange_strong(expected, true))
+							blog(LOG_WARNING,
+							     "obs-cam-effects: face swap failed on frame: %s",
+							     e.what());
+						throw;
 					} catch (...) {
 						if (swap->hasFailedBackend())
 							failed->store(true, std::memory_order_release);
+						bool expected = false;
+						if (errLogged->compare_exchange_strong(expected, true))
+							blog(LOG_WARNING,
+							     "obs-cam-effects: face swap failed on frame (unknown error)");
 						throw;
 					}
 				}
@@ -985,6 +1003,7 @@ void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled)
 					fx->swapPipeline->resetTracking();
 			}
 			fx->faceswapFailed->store(false, std::memory_order_release);
+			fx->swapErrorLogged->store(false, std::memory_order_release);
 			return;
 		}
 		if (wasEnabled)
@@ -1018,6 +1037,7 @@ void cam_fx_faceswap_set_enabled(cam_fx_t *fx, int enabled)
 			blog(LOG_INFO, "obs-cam-effects: face swap pipeline built");
 		}
 		fx->faceswapFailed->store(false, std::memory_order_release);
+		fx->swapErrorLogged->store(false, std::memory_order_release);
 		fx->faceswapEnabled.store(true, std::memory_order_release);
 		try {
 			installProcessor(fx);

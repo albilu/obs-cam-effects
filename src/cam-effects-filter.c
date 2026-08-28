@@ -534,7 +534,9 @@ static obs_properties_t *cam_effects_properties(void *data)
 		 "use only (InsightFace). Use only faces you have "
 		 "rights/consent to use. Output is AI-generated; a "
 		 "disclosure badge is applied by default (EU AI Act "
-		 "Art. 50).");
+		 "Art. 50). While face swap is on, the raw camera feed is "
+		 "never shown: startup, stalls and failures display the "
+		 "last processed frame.");
 	if (filter && filter->fx && !fs_available) {
 		char reason[128] = {0};
 		cam_fx_faceswap_missing(filter->fx, reason, sizeof(reason));
@@ -842,8 +844,14 @@ static void cam_effects_video_render(void *data, gs_effect_t *effect)
 	UNUSED_PARAMETER(effect);
 	struct cam_effects_filter *filter = data;
 	int mode = atomic_load_explicit(&filter->mode_id, memory_order_relaxed);
-	bool freeze = atomic_load_explicit(&filter->failure_id, memory_order_relaxed) == FAILURE_FREEZE;
 	bool face_swap = atomic_load_explicit(&filter->face_swap, memory_order_relaxed) != 0;
+	/* Face swap exists to replace the user's face, so while it is
+	 * enabled the raw feed must never reach the output (deep-live-cam
+	 * parity): startup, stalls and backend failures all show the last
+	 * processed frame (black before the first) instead of passing the
+	 * camera through. The failure-mode dropdown only governs
+	 * background-only operation. */
+	bool freeze = face_swap || atomic_load_explicit(&filter->failure_id, memory_order_relaxed) == FAILURE_FREEZE;
 
 	obs_source_t *target = obs_filter_get_target(filter->source);
 	uint32_t w = target ? obs_source_get_base_width(target) : 0;
