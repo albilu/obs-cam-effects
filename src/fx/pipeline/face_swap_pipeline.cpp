@@ -34,7 +34,10 @@ FaceSwapPipeline::FaceSwapPipeline(const std::string &yunetPath, const std::stri
 	    in1[1] != kLatent || out0.size() != 4 || out0[1] != 3 || out0[2] != kCrop || out0[3] != kCrop)
 		throw std::runtime_error("fx: unexpected inswapper IO shape");
 
-	const std::vector<float> mask = ellipseMask(kCrop, 0.35f, 0.45f, 12);
+	/* DLC-parity paste-back alpha (deep-live-cam _get_soft_alpha):
+	 * hard ellipse axes 0.44 + GaussianBlur(31,31) sigma 12 — wide
+	 * smooth feather covering temples/jaw, no visible seam ring. */
+	const std::vector<float> mask = softEllipseMask(kCrop, 0.44f, 15, 12.0f);
 	mask128_.resize(mask.size());
 	for (size_t i = 0; i < mask.size(); i++)
 		mask128_[i] = (uint8_t)std::lround(mask[i] * 255.0f);

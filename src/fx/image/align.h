@@ -38,6 +38,12 @@ void warpAffineBilinear(const uint8_t *src, int sw, int sh, int channels,
  * (DLC-style anti-wobble paste mask), radii relative to s, feather in px. */
 std::vector<float> ellipseMask(int s, float rx, float ry, int feather);
 
+/* DLC-parity soft paste mask (deep-live-cam _get_soft_alpha): hard
+ * filled ellipse with axes axesRatio*s, feathered by a separable
+ * Gaussian (kernel width 2*gaussianRadius+1, sigma gaussianSigma).
+ * DLC uses axes 0.44 and GaussianBlur(31,31) sigma 12. */
+std::vector<float> softEllipseMask(int s, float axesRatio, int gaussianRadius, float gaussianSigma);
+
 /* unsharp mask on an interleaved uint8 image: out = src + amount·(src − blur). */
 void unsharpMask(uint8_t *img, int w, int h, int channels, int radius,
 		 float amount);

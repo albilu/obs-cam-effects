@@ -156,6 +156,55 @@ void boxBlurFloat(std::vector<float> &img, int w, int h, int r)
 	}
 }
 
+/* Separable Gaussian blur over a single-channel float image, matching
+ * cv2.GaussianBlur(k, k, sigma) (normalized kernel, BORDER_REFLECT_101
+ * edges). Used for the DLC-parity paste-mask feather. */
+void gaussianBlurFloat(std::vector<float> &img, int w, int h, int radius, float sigma)
+{
+	if (radius <= 0 || sigma <= 0.0f || w <= 0 || h <= 0)
+		return;
+	const int k = 2 * radius + 1;
+	std::vector<float> kern((size_t)k);
+	double sum = 0.0;
+	for (int i = -radius; i <= radius; i++) {
+		const float v = (float)std::exp(-0.5 * (double)(i * i) / ((double)sigma * (double)sigma));
+		kern[(size_t)(i + radius)] = v;
+		sum += v;
+	}
+	for (float &v : kern)
+		v = (float)(v / sum);
+	auto reflect101 = [](int i, int n) {
+		if (n == 1)
+			return 0;
+		while (i < 0 || i >= n) {
+			if (i < 0)
+				i = -i;
+			if (i >= n)
+				i = 2 * (n - 1) - i;
+		}
+		return i;
+	};
+	std::vector<float> tmp((size_t)w * (size_t)h);
+	for (int y = 0; y < h; y++) {
+		for (int x = 0; x < w; x++) {
+			float acc = 0.0f;
+			for (int t = -radius; t <= radius; t++)
+				acc += kern[(size_t)(t + radius)] *
+				       img[(size_t)y * (size_t)w + (size_t)reflect101(x + t, w)];
+			tmp[(size_t)y * (size_t)w + (size_t)x] = acc;
+		}
+	}
+	for (int y = 0; y < h; y++) {
+		for (int x = 0; x < w; x++) {
+			float acc = 0.0f;
+			for (int t = -radius; t <= radius; t++)
+				acc += kern[(size_t)(t + radius)] *
+				       tmp[(size_t)reflect101(y + t, h) * (size_t)w + (size_t)x];
+			img[(size_t)y * (size_t)w + (size_t)x] = acc;
+		}
+	}
+}
+
 } // namespace
 
 std::vector<float> ellipseMask(int s, float rx, float ry, int feather)
@@ -169,6 +218,25 @@ std::vector<float> ellipseMask(int s, float rx, float ry, int feather)
 						    b, feather);
 	if (feather > 0)
 		boxBlurFloat(m, s, s, std::max(1, feather / 4));
+	return m;
+}
+
+std::vector<float> softEllipseMask(int s, float axesRatio, int gaussianRadius, float gaussianSigma)
+{
+	std::vector<float> m((size_t)s * (size_t)s, 0.0f);
+	if (s <= 0 || axesRatio <= 0.0f)
+		return m;
+	const float c = 0.5f * (float)s;
+	const float a = axesRatio * (float)s;
+	for (int y = 0; y < s; y++) {
+		for (int x = 0; x < s; x++) {
+			const float nx = ((float)x - c) / a;
+			const float ny = ((float)y - c) / a;
+			m[(size_t)y * (size_t)s + (size_t)x] =
+				(nx * nx + ny * ny) <= 1.0f ? 1.0f : 0.0f;
+		}
+	}
+	gaussianBlurFloat(m, s, s, gaussianRadius, gaussianSigma);
 	return m;
 }
 

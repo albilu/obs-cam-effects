@@ -71,6 +71,37 @@ TEST(EllipseMask, CenterOneCornerZero)
 	ASSERT_FLOAT_EQ(mask[(127 * 128) + 127], 0.0f);
 }
 
+/* DLC-parity paste mask: hard ellipse (axes 0.44*size, matching
+ * deep-live-cam's _get_soft_alpha) + Gaussian feather sigma 12. */
+TEST(SoftEllipseMask, MatchesDeepLiveCamGeometry)
+{
+	auto mask = fx::softEllipseMask(128, 0.44f, 15, 12.0f);
+	ASSERT_EQ(mask.size(), 128u * 128u);
+	const float center = mask[(64 * 128) + 64];
+	ASSERT_NEAR(center, 1.0f, 1e-4f);
+	/* Corners stay zero: the feather must not bleed opaque swap over
+	 * the crop's edges. */
+	ASSERT_EQ(mask[0], 0.0f);
+	ASSERT_EQ(mask[(127 * 128) + 127], 0.0f);
+	/* Gaussian blur of a step edge passes ~0.5 exactly at the edge
+	 * (axes 0.44*128 = 56 px from the center). */
+	const int edge = 64 + 56;
+	ASSERT_NEAR(mask[(64 * 128) + edge], 0.5f, 0.06f);
+	/* 30 px inside the boundary the feather has fully saturated. */
+	const float inside = mask[(90 * 128) + 64];
+	ASSERT_NEAR(inside, 1.0f, 0.05f);
+	/* Feather decays monotonically outward. */
+	const float atEdge = mask[(64 * 128) + edge];
+	const float outside = mask[(64 * 128) + (edge + 6 > 127 ? 127 : edge + 6)];
+	EXPECT_GT(inside, atEdge);
+	EXPECT_GT(atEdge, outside);
+	EXPECT_GT(outside, 0.0f);
+	/* Symmetric across the center on samples whose kernel does not
+	 * reach the array border (border REFLECT_101 reflection is
+	 * asymmetric by one column, like cv2). */
+	ASSERT_NEAR(mask[(64 * 128) + 24], mask[(64 * 128) + 104], 1e-4f);
+}
+
 TEST(UnsharpMask, SharpensStep)
 {
 	uint8_t img[8 * 3];
