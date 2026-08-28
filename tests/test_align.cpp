@@ -55,8 +55,12 @@ TEST(WarpAffine, TranslateByIntegerPixels)
 	src[(1 * 4 + 1) * 3 + 0] = 255;
 	uint8_t dst[4 * 4 * 3] = {0};
 	fx::Affine23 m; /* translate (+2,+1): dst(3,2) should be 255 */
-	m.m[0] = 1; m.m[1] = 0; m.m[2] = 2;
-	m.m[3] = 0; m.m[4] = 1; m.m[5] = 1;
+	m.m[0] = 1;
+	m.m[1] = 0;
+	m.m[2] = 2;
+	m.m[3] = 0;
+	m.m[4] = 1;
+	m.m[5] = 1;
 	fx::warpAffineBilinear(src, 4, 4, 3, m, dst, 4, 4);
 	ASSERT_EQ(dst[(2 * 4 + 3) * 3 + 0], 255);
 	ASSERT_EQ(dst[(1 * 4 + 1) * 3 + 0], 0);
@@ -123,8 +127,8 @@ TEST(RestoreMouthRegion, OnlyMouthRestored)
 	const int w = 32, h = 32, ch = 3;
 	std::vector<uint8_t> img(w * h * ch, 200), orig(w * h * ch, 50);
 	fx::restoreMouthRegion(img.data(), orig.data(), w, h, ch, {10, 24}, {22, 24}, 1.0f, 2, 1.0f);
-	ASSERT_EQ(img[(24 * w + 16) * 3], 50);	 // mouth center restored
-	ASSERT_EQ(img[(4 * w + 4) * 3], 200);	 // far away untouched
+	ASSERT_EQ(img[(24 * w + 16) * 3], 50); // mouth center restored
+	ASSERT_EQ(img[(4 * w + 4) * 3], 200);  // far away untouched
 }
 
 TEST(RestoreMouthRegion, HalfStrengthBlendsHalfway)

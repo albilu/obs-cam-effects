@@ -326,52 +326,51 @@ void installProcessor(cam_fx *fx)
 		std::shared_ptr<std::atomic<bool>> bg = fx->bgActive;
 		std::shared_ptr<std::atomic<bool>> failed = fx->faceswapFailed;
 		std::shared_ptr<std::atomic<bool>> errLogged = fx->swapErrorLogged;
-		fx->worker->setProcessor(
-			[seg, swap, m, bg, generation, failed, errLogged, capturedGeneration](const fx::Frame &frame) {
-				if (frame.bypassFaceSwap) {
-					fx::WorkerResult r;
-					r.mask = seg->process(frame);
-					return r;
-				}
-				fx::Frame work = frame;
-				bool aiModified = false;
-				{
-					std::lock_guard<std::mutex> lk(*m);
-					if (generation->load(std::memory_order_acquire) != capturedGeneration)
-						throw std::runtime_error("fx: stale face-swap processor");
-					try {
-						aiModified = swap->process(work);
-					} catch (const std::exception &e) {
-						if (swap->hasFailedBackend())
-							failed->store(true, std::memory_order_release);
-						bool expected = false;
-						if (errLogged->compare_exchange_strong(expected, true))
-							blog(LOG_WARNING,
-							     "obs-cam-effects: face swap failed on frame: %s",
-							     e.what());
-						throw;
-					} catch (...) {
-						if (swap->hasFailedBackend())
-							failed->store(true, std::memory_order_release);
-						bool expected = false;
-						if (errLogged->compare_exchange_strong(expected, true))
-							blog(LOG_WARNING,
-							     "obs-cam-effects: face swap failed on frame (unknown error)");
-						throw;
-					}
-				}
+		fx->worker->setProcessor([seg, swap, m, bg, generation, failed, errLogged,
+					  capturedGeneration](const fx::Frame &frame) {
+			if (frame.bypassFaceSwap) {
 				fx::WorkerResult r;
-				/* The mask only feeds the background
+				r.mask = seg->process(frame);
+				return r;
+			}
+			fx::Frame work = frame;
+			bool aiModified = false;
+			{
+				std::lock_guard<std::mutex> lk(*m);
+				if (generation->load(std::memory_order_acquire) != capturedGeneration)
+					throw std::runtime_error("fx: stale face-swap processor");
+				try {
+					aiModified = swap->process(work);
+				} catch (const std::exception &e) {
+					if (swap->hasFailedBackend())
+						failed->store(true, std::memory_order_release);
+					bool expected = false;
+					if (errLogged->compare_exchange_strong(expected, true))
+						blog(LOG_WARNING, "obs-cam-effects: face swap failed on frame: %s",
+						     e.what());
+					throw;
+				} catch (...) {
+					if (swap->hasFailedBackend())
+						failed->store(true, std::memory_order_release);
+					bool expected = false;
+					if (errLogged->compare_exchange_strong(expected, true))
+						blog(LOG_WARNING,
+						     "obs-cam-effects: face swap failed on frame (unknown error)");
+					throw;
+				}
+			}
+			fx::WorkerResult r;
+			/* The mask only feeds the background
 				 * composite — skip the segmentation run
 				 * (2-6ms/frame) when background is off; the
 				 * fs-only composite draws the full-route frame
 				 * directly and tolerates the null mask. */
-				if (bg->load(std::memory_order_relaxed))
-					r.mask = seg->process(work);
-				r.frame = std::make_shared<const fx::Frame>(std::move(work));
-				r.aiModified = aiModified;
-				return r;
-			});
+			if (bg->load(std::memory_order_relaxed))
+				r.mask = seg->process(work);
+			r.frame = std::make_shared<const fx::Frame>(std::move(work));
+			r.aiModified = aiModified;
+			return r;
+		});
 	} else {
 		fx->worker->setProcessor([seg](const fx::Frame &frame) {
 			fx::WorkerResult r;

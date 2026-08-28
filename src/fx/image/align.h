@@ -30,9 +30,8 @@ Affine23 invertAffine(const Affine23 &m);
  * dst(x,y) = src(M⁻¹ · (x,y)) — caller passes the FORWARD transform.
  * Channels: 3 (BGR) or 4 (BGRA). Out-of-bounds samples are clamped to
  * the edge pixel. */
-void warpAffineBilinear(const uint8_t *src, int sw, int sh, int channels,
-			const Affine23 &forwardM, uint8_t *dst, int dw,
-			int dh);
+void warpAffineBilinear(const uint8_t *src, int sw, int sh, int channels, const Affine23 &forwardM, uint8_t *dst,
+			int dw, int dh);
 
 /* Feathered elliptical alpha mask centered in a crop of size s×s
  * (DLC-style anti-wobble paste mask), radii relative to s, feather in px. */
@@ -45,8 +44,7 @@ std::vector<float> ellipseMask(int s, float rx, float ry, int feather);
 std::vector<float> softEllipseMask(int s, float axesRatio, int gaussianRadius, float gaussianSigma);
 
 /* unsharp mask on an interleaved uint8 image: out = src + amount·(src − blur). */
-void unsharpMask(uint8_t *img, int w, int h, int channels, int radius,
-		 float amount);
+void unsharpMask(uint8_t *img, int w, int h, int channels, int radius, float amount);
 
 /* Composite `origMouth` (same geometry) back over `img` inside an
  * ellipse centered between mouth landmarks, feathered. `strength`

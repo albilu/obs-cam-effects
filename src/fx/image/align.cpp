@@ -90,8 +90,8 @@ Affine23 invertAffine(const Affine23 &m)
 	return r;
 }
 
-void warpAffineBilinear(const uint8_t *src, int sw, int sh, int channels,
-			const Affine23 &forwardM, uint8_t *dst, int dw, int dh)
+void warpAffineBilinear(const uint8_t *src, int sw, int sh, int channels, const Affine23 &forwardM, uint8_t *dst,
+			int dw, int dh)
 {
 	Affine23 inv = invertAffine(forwardM);
 	for (int y = 0; y < dh; y++) {
@@ -110,11 +110,9 @@ void warpAffineBilinear(const uint8_t *src, int sw, int sh, int channels,
 				float v01 = src[(ya * sw + xb) * channels + c];
 				float v10 = src[(yb * sw + xa) * channels + c];
 				float v11 = src[(yb * sw + xb) * channels + c];
-				float v = (v00 * (1.0f - fx) + v01 * fx) *
-						  (1.0f - fy) +
+				float v = (v00 * (1.0f - fx) + v01 * fx) * (1.0f - fy) +
 					  (v10 * (1.0f - fx) + v11 * fx) * fy;
-				d[c] = (uint8_t)std::clamp((int)std::lround(v), 0,
-							   255);
+				d[c] = (uint8_t)std::clamp((int)std::lround(v), 0, 255);
 			}
 		}
 	}
@@ -144,14 +142,12 @@ void boxBlurFloat(std::vector<float> &img, int w, int h, int r)
 	for (int y = 0; y < h; y++) {
 		int y0 = std::max(0, y - r), y1 = std::min(h - 1, y + r);
 		for (int x = 0; x < w; x++) {
-			int x0 = std::max(0, x - r), x1 =
-				std::min(w - 1, x + r);
+			int x0 = std::max(0, x - r), x1 = std::min(w - 1, x + r);
 			float sum = 0;
 			for (int yy = y0; yy <= y1; yy++)
 				for (int xx = x0; xx <= x1; xx++)
 					sum += src[yy * w + xx];
-			img[y * w + x] =
-				sum / (float)((y1 - y0 + 1) * (x1 - x0 + 1));
+			img[y * w + x] = sum / (float)((y1 - y0 + 1) * (x1 - x0 + 1));
 		}
 	}
 }
@@ -214,8 +210,7 @@ std::vector<float> ellipseMask(int s, float rx, float ry, int feather)
 	float a = rx * (float)s, b = ry * (float)s;
 	for (int y = 0; y < s; y++)
 		for (int x = 0; x < s; x++)
-			m[y * s + x] = ellipseAlpha((float)x - c, (float)y - c, a,
-						    b, feather);
+			m[y * s + x] = ellipseAlpha((float)x - c, (float)y - c, a, b, feather);
 	if (feather > 0)
 		boxBlurFloat(m, s, s, std::max(1, feather / 4));
 	return m;
@@ -232,40 +227,33 @@ std::vector<float> softEllipseMask(int s, float axesRatio, int gaussianRadius, f
 		for (int x = 0; x < s; x++) {
 			const float nx = ((float)x - c) / a;
 			const float ny = ((float)y - c) / a;
-			m[(size_t)y * (size_t)s + (size_t)x] =
-				(nx * nx + ny * ny) <= 1.0f ? 1.0f : 0.0f;
+			m[(size_t)y * (size_t)s + (size_t)x] = (nx * nx + ny * ny) <= 1.0f ? 1.0f : 0.0f;
 		}
 	}
 	gaussianBlurFloat(m, s, s, gaussianRadius, gaussianSigma);
 	return m;
 }
 
-void unsharpMask(uint8_t *img, int w, int h, int channels, int radius,
-		 float amount)
+void unsharpMask(uint8_t *img, int w, int h, int channels, int radius, float amount)
 {
 	if (radius <= 0 || amount == 0.0f)
 		return;
 	std::vector<uint8_t> src(img, img + (size_t)w * h * channels);
 	for (int y = 0; y < h; y++) {
-		int y0 = std::max(0, y - radius),
-		    y1 = std::min(h - 1, y + radius);
+		int y0 = std::max(0, y - radius), y1 = std::min(h - 1, y + radius);
 		for (int x = 0; x < w; x++) {
-			int x0 = std::max(0, x - radius),
-			    x1 = std::min(w - 1, x + radius);
+			int x0 = std::max(0, x - radius), x1 = std::min(w - 1, x + radius);
 			int count = (y1 - y0 + 1) * (x1 - x0 + 1);
 			uint8_t *d = img + (y * w + x) * channels;
 			for (int c = 0; c < channels; c++) {
 				int sum = 0;
 				for (int yy = y0; yy <= y1; yy++)
 					for (int xx = x0; xx <= x1; xx++)
-						sum += src[(yy * w + xx) *
-								   channels +
-							   c];
+						sum += src[(yy * w + xx) * channels + c];
 				float blur = (float)sum / (float)count;
 				float sv = src[(y * w + x) * channels + c];
 				float v = sv + amount * (sv - blur);
-				d[c] = (uint8_t)std::clamp((int)std::lround(v),
-							   0, 255);
+				d[c] = (uint8_t)std::clamp((int)std::lround(v), 0, 255);
 			}
 		}
 	}
@@ -288,18 +276,15 @@ void restoreMouthRegion(uint8_t *img, const uint8_t *orig, int w, int h, int cha
 	int y1 = std::min(h - 1, (int)std::ceil(cy + b + grow));
 	for (int y = y0; y <= y1; y++) {
 		for (int x = x0; x <= x1; x++) {
-			float alpha = ellipseAlpha((float)x - cx, (float)y - cy,
-						   a, b, feather);
+			float alpha = ellipseAlpha((float)x - cx, (float)y - cy, a, b, feather);
 			alpha *= strength;
 			if (alpha <= 0.0f)
 				continue;
 			uint8_t *d = img + (y * w + x) * channels;
 			const uint8_t *o = orig + (y * w + x) * channels;
 			for (int c = 0; c < channels; c++) {
-				float v = o[c] * alpha +
-					  d[c] * (1.0f - alpha);
-				d[c] = (uint8_t)std::clamp((int)std::lround(v),
-							   0, 255);
+				float v = o[c] * alpha + d[c] * (1.0f - alpha);
+				d[c] = (uint8_t)std::clamp((int)std::lround(v), 0, 255);
 			}
 		}
 	}
@@ -318,8 +303,7 @@ void blendPx(uint8_t *img, int idx, int channels, uint8_t fg, float alpha)
 	int n = std::min(channels, 3);
 	for (int c = 0; c < n; c++) {
 		float v = img[idx + c] * (1.0f - alpha) + fg * alpha;
-		img[idx + c] =
-			(uint8_t)std::clamp((int)std::lround(v), 0, 255);
+		img[idx + c] = (uint8_t)std::clamp((int)std::lround(v), 0, 255);
 	}
 }
 
@@ -327,7 +311,9 @@ void blendPx(uint8_t *img, int idx, int channels, uint8_t fg, float alpha)
 
 void stampWatermarkAI(uint8_t *img, int w, int h, int channels)
 {
-	int scale = std::max(3, h / 270); /* >=3 so the badge stays readable on small feeds (e.g. 640x480); ~2.5% of frame width at 1080p */
+	int scale = std::max(
+		3,
+		h / 270); /* >=3 so the badge stays readable on small feeds (e.g. 640x480); ~2.5% of frame width at 1080p */
 	int margin = std::max(1, h / 40);
 	int glyphW = 5 * scale, glyphH = 7 * scale, gap = scale;
 	int pad = scale;
@@ -341,12 +327,10 @@ void stampWatermarkAI(uint8_t *img, int w, int h, int channels)
 	/* dark box (corners knocked out for a rounded look) */
 	for (int y = 0; y < boxH; y++) {
 		for (int x = 0; x < boxW; x++) {
-			bool corner = (x == 0 || x == boxW - 1) &&
-				      (y == 0 || y == boxH - 1);
+			bool corner = (x == 0 || x == boxW - 1) && (y == 0 || y == boxH - 1);
 			if (corner)
 				continue;
-			blendPx(img, ((by + y) * w + (bx + x)) * channels,
-				channels, 0, kAlpha);
+			blendPx(img, ((by + y) * w + (bx + x)) * channels, channels, 0, kAlpha);
 		}
 	}
 	/* white glyphs */
@@ -360,14 +344,9 @@ void stampWatermarkAI(uint8_t *img, int w, int h, int channels)
 				for (int sy = 0; sy < scale; sy++)
 					for (int sx = 0; sx < scale; sx++)
 						blendPx(img,
-							((by + pad +
-							  row * scale + sy) *
-								 w +
-							 (ox + col * scale +
-							  sx)) *
+							((by + pad + row * scale + sy) * w + (ox + col * scale + sx)) *
 								channels,
-							channels, 255,
-							kAlpha);
+							channels, 255, kAlpha);
 			}
 		}
 	}
@@ -392,12 +371,10 @@ std::vector<uint8_t> renderWatermarkBadgeRGBA(int &outW, int &outH)
 	const uint8_t boxA = (uint8_t)std::lround(0.8f * 255.0f);
 	for (int y = 0; y < boxH; y++) {
 		for (int x = 0; x < boxW; x++) {
-			bool corner = (x == 0 || x == boxW - 1) &&
-				      (y == 0 || y == boxH - 1);
+			bool corner = (x == 0 || x == boxW - 1) && (y == 0 || y == boxH - 1);
 			if (corner)
 				continue;
-			buf[((size_t)y * (size_t)boxW + (size_t)x) * 4 + 3] =
-				boxA;
+			buf[((size_t)y * (size_t)boxW + (size_t)x) * 4 + 3] = boxA;
 		}
 	}
 	/* Opaque white glyphs. */
